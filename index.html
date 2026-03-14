@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#020817" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="description" content="Undercover - Le jeu de déduction social en temps réel" />
+  <title>UNDERCOVER</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/css/styles.css" />
+</head>
+<body class="bg-[#020817] text-white min-h-screen overflow-x-hidden">
+
+  <!-- Scanline overlay effect -->
+  <div class="scanlines-overlay" aria-hidden="true"></div>
+
+  <!-- Noise texture overlay -->
+  <div class="noise-overlay" aria-hidden="true"></div>
+
+  <!-- App root - les écrans sont injectés ici dynamiquement -->
+  <div id="app" class="relative z-10 min-h-screen flex flex-col"></div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-full max-w-sm px-4"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

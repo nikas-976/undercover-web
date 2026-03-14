@@ -1,0 +1,516 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =============================================
+   CUSTOM CSS VARIABLES
+   ============================================= */
+:root {
+  --cyan-glow: #00f5d4;
+  --amber-glow: #f59e0b;
+  --red-danger: #ef4444;
+  --navy-deep: #020817;
+  --navy-card: #0a1428;
+  --navy-border: #162952;
+  --text-muted: rgba(226, 232, 240, 0.5);
+}
+
+/* =============================================
+   GLOBAL RESET & TYPOGRAPHY
+   ============================================= */
+* {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background-color: var(--navy-deep);
+  background-image:
+    radial-gradient(ellipse at 20% 50%, rgba(0, 245, 212, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(245, 158, 11, 0.03) 0%, transparent 40%);
+}
+
+h1, h2, h3 {
+  font-family: 'Syne', sans-serif;
+}
+
+code, .font-mono {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* =============================================
+   SCANLINES & NOISE EFFECTS
+   ============================================= */
+.scanlines-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  animation: scanline-move 20s linear infinite;
+}
+
+@keyframes scanline-move {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 100%; }
+}
+
+.noise-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+}
+
+/* =============================================
+   SCREEN TRANSITIONS
+   ============================================= */
+.screen {
+  animation: screen-enter 0.35s ease-out;
+}
+
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* =============================================
+   GLOW EFFECTS
+   ============================================= */
+.glow-cyan {
+  box-shadow: 0 0 8px rgba(0, 245, 212, 0.4), 0 0 24px rgba(0, 245, 212, 0.15);
+}
+
+.glow-amber {
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4), 0 0 24px rgba(245, 158, 11, 0.15);
+}
+
+.glow-red {
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4), 0 0 24px rgba(239, 68, 68, 0.15);
+}
+
+.text-glow-cyan {
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.7), 0 0 20px rgba(0, 245, 212, 0.3);
+}
+
+.text-glow-amber {
+  text-shadow: 0 0 8px rgba(245, 158, 11, 0.7), 0 0 20px rgba(245, 158, 11, 0.3);
+}
+
+/* =============================================
+   BUTTONS
+   ============================================= */
+.btn-primary {
+  @apply relative overflow-hidden font-display font-bold tracking-wider uppercase py-4 px-8 rounded-lg;
+  background: linear-gradient(135deg, rgba(0, 245, 212, 0.15), rgba(0, 245, 212, 0.05));
+  border: 1px solid rgba(0, 245, 212, 0.5);
+  color: var(--cyan-glow);
+  transition: all 0.2s ease;
+  letter-spacing: 0.15em;
+}
+
+.btn-primary:hover, .btn-primary:active {
+  background: linear-gradient(135deg, rgba(0, 245, 212, 0.25), rgba(0, 245, 212, 0.1));
+  border-color: var(--cyan-glow);
+  box-shadow: 0 0 16px rgba(0, 245, 212, 0.3), inset 0 0 16px rgba(0, 245, 212, 0.05);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: linear-gradient(45deg, transparent, rgba(0, 245, 212, 0.08), transparent);
+  transform: rotate(45deg) translateX(-100%);
+  transition: transform 0.4s ease;
+}
+
+.btn-primary:hover::after {
+  transform: rotate(45deg) translateX(100%);
+}
+
+.btn-secondary {
+  @apply relative font-display font-bold tracking-wider uppercase py-4 px-8 rounded-lg;
+  background: transparent;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: var(--amber-glow);
+  transition: all 0.2s ease;
+  letter-spacing: 0.15em;
+}
+
+.btn-secondary:hover, .btn-secondary:active {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: var(--amber-glow);
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.25);
+}
+
+.btn-danger {
+  @apply relative font-display font-bold tracking-wider uppercase py-4 px-8 rounded-lg;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.05));
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #ef4444;
+  transition: all 0.2s ease;
+  letter-spacing: 0.1em;
+}
+
+.btn-danger:hover, .btn-danger:active {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: #ef4444;
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.3);
+}
+
+.btn-warning {
+  @apply relative font-display font-bold tracking-wider uppercase py-4 px-8 rounded-lg;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.05));
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #f59e0b;
+  transition: all 0.2s ease;
+  letter-spacing: 0.1em;
+}
+
+.btn-warning:hover, .btn-warning:active {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: #f59e0b;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.3);
+}
+
+.btn-ghost {
+  @apply font-body py-3 px-6 rounded-lg;
+  background: transparent;
+  border: 1px solid rgba(226, 232, 240, 0.12);
+  color: rgba(226, 232, 240, 0.6);
+  transition: all 0.2s ease;
+}
+
+.btn-ghost:hover {
+  border-color: rgba(226, 232, 240, 0.25);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+/* =============================================
+   CARDS
+   ============================================= */
+.card {
+  background: rgba(10, 20, 40, 0.8);
+  border: 1px solid rgba(22, 41, 82, 0.8);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+}
+
+.card-glass {
+  background: rgba(10, 20, 40, 0.6);
+  border: 1px solid rgba(0, 245, 212, 0.08);
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+}
+
+/* =============================================
+   INPUT FIELDS
+   ============================================= */
+.input-field {
+  @apply w-full py-4 px-5 rounded-lg font-mono text-lg;
+  background: rgba(10, 20, 40, 0.9);
+  border: 1px solid rgba(22, 41, 82, 0.9);
+  color: var(--cyan-glow);
+  outline: none;
+  transition: all 0.2s ease;
+  caret-color: var(--cyan-glow);
+}
+
+.input-field::placeholder {
+  color: rgba(226, 232, 240, 0.25);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+
+.input-field:focus {
+  border-color: rgba(0, 245, 212, 0.5);
+  box-shadow: 0 0 0 3px rgba(0, 245, 212, 0.08), 0 0 12px rgba(0, 245, 212, 0.1);
+}
+
+/* =============================================
+   ROOM CODE DISPLAY
+   ============================================= */
+.room-code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 3.5rem;
+  font-weight: 500;
+  letter-spacing: 0.4em;
+  color: var(--cyan-glow);
+  text-shadow: 0 0 12px rgba(0, 245, 212, 0.6), 0 0 30px rgba(0, 245, 212, 0.2);
+  padding-right: 0.4em; /* compensate for letter-spacing on last char */
+}
+
+/* =============================================
+   PLAYER LIST ITEMS
+   ============================================= */
+.player-item {
+  @apply flex items-center gap-3 px-4 py-3 rounded-lg;
+  background: rgba(10, 20, 40, 0.6);
+  border: 1px solid rgba(22, 41, 82, 0.6);
+  transition: all 0.2s ease;
+  animation: slide-up 0.3s ease-out;
+}
+
+.player-item.is-host::after {
+  content: 'HOST';
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.15em;
+  color: var(--amber-glow);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.player-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* =============================================
+   SECRET WORD REVEAL CARD
+   ============================================= */
+.word-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 0.15s ease;
+}
+
+.word-card:active {
+  transform: scale(0.97);
+}
+
+.word-card-hidden {
+  background: linear-gradient(135deg, rgba(10, 20, 40, 0.95), rgba(5, 10, 21, 0.95));
+  border: 1px solid rgba(0, 245, 212, 0.2);
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(0, 245, 212, 0.2), 0 0 20px rgba(0, 245, 212, 0.05); }
+  50% { box-shadow: 0 0 20px rgba(0, 245, 212, 0.4), 0 0 40px rgba(0, 245, 212, 0.15); }
+}
+
+.word-card-revealed {
+  background: linear-gradient(135deg, rgba(0, 245, 212, 0.08), rgba(0, 245, 212, 0.02));
+  border: 1px solid rgba(0, 245, 212, 0.4);
+  box-shadow: 0 0 24px rgba(0, 245, 212, 0.15);
+}
+
+/* =============================================
+   ROLE BADGE
+   ============================================= */
+.role-badge {
+  @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono font-medium tracking-wider uppercase;
+}
+
+.role-civil { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); color: #22c55e; }
+.role-undercover { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; }
+.role-tourist { background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.3); color: #a855f7; }
+.role-indicator { background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); color: #3b82f6; }
+.role-double-agent { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: #f59e0b; }
+
+/* =============================================
+   TWIST BANNER
+   ============================================= */
+.twist-banner {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-left: 3px solid var(--amber-glow);
+  border-radius: 8px;
+  animation: twist-appear 0.5s ease-out;
+}
+
+@keyframes twist-appear {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* =============================================
+   VOTE BUTTON
+   ============================================= */
+.vote-btn {
+  @apply flex items-center justify-between px-4 py-3 rounded-lg w-full;
+  background: rgba(10, 20, 40, 0.6);
+  border: 1px solid rgba(22, 41, 82, 0.6);
+  transition: all 0.2s ease;
+}
+
+.vote-btn:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.vote-btn.selected {
+  border-color: rgba(239, 68, 68, 0.6);
+  background: rgba(239, 68, 68, 0.1);
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
+}
+
+.vote-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* =============================================
+   ELIMINATED BADGE
+   ============================================= */
+.eliminated-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 8, 23, 0.7);
+  border-radius: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eliminated-line {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(239, 68, 68, 0.5);
+}
+
+/* =============================================
+   TOAST NOTIFICATIONS
+   ============================================= */
+.toast {
+  @apply px-4 py-3 rounded-lg text-sm font-body;
+  backdrop-filter: blur(16px);
+  animation: toast-enter 0.3s ease-out;
+  max-width: 100%;
+}
+
+@keyframes toast-enter {
+  from { opacity: 0; transform: translateY(-12px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.toast-info {
+  background: rgba(10, 20, 40, 0.95);
+  border: 1px solid rgba(0, 245, 212, 0.3);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.toast-error {
+  background: rgba(30, 8, 8, 0.95);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.toast-success {
+  background: rgba(5, 22, 10, 0.95);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #86efac;
+}
+
+/* =============================================
+   LOGO / TITLE EFFECT
+   ============================================= */
+.game-logo {
+  font-family: 'Syne', sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #00f5d4 0%, rgba(0, 245, 212, 0.7) 50%, #f59e0b 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 12px rgba(0, 245, 212, 0.3));
+}
+
+/* =============================================
+   LOADING SPINNER
+   ============================================= */
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(0, 245, 212, 0.2);
+  border-top-color: var(--cyan-glow);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =============================================
+   PROGRESS BAR (votes)
+   ============================================= */
+.vote-progress {
+  height: 3px;
+  background: rgba(22, 41, 82, 0.6);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.vote-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--cyan-glow), rgba(0, 245, 212, 0.6));
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* =============================================
+   UTILITY
+   ============================================= */
+@keyframes slide-up {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(22, 41, 82, 0.8), transparent);
+  margin: 1rem 0;
+}
