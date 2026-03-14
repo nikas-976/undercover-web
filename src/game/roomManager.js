@@ -141,6 +141,13 @@ export async function startGame(code, wordPair, assignedRoles, twist, selectedTh
   updates[`rooms/${code}/currentTwist`]   = twist
   updates[`rooms/${code}/selectedTheme`]  = selectedTheme
   updates[`rooms/${code}/votes`]          = {}
+  updates[`rooms/${code}/isTiebreak`]     = false
+  updates[`rooms/${code}/isBonusRound`]   = false
+  updates[`rooms/${code}/tiedPlayers`]    = null
+  updates[`rooms/${code}/eliminatedThisRound`] = null
+  updates[`rooms/${code}/gameResult`]     = null
+  updates[`rooms/${code}/speakingOrder`]  = []
+  updates[`rooms/${code}/currentSpeakerIndex`] = 0
 
   // Assigne les rôles et mots aux joueurs
   for (const { uid, role, secretWord } of assignedRoles) {
@@ -207,13 +214,56 @@ export async function processVotes(code) {
   const maxVotes = tally[sortedPlayers[0]]
   const tied = sortedPlayers.filter(id => tally[id] === maxVotes)
 
-  // En cas d'égalité, personne n'est éliminé
+  // En cas d'égalité
   if (tied.length > 1) {
+    const isTiebreak  = room.isTiebreak  === true
+    const isBonusRound = room.isBonusRound === true
+
+    if (isBonusRound) {
+      // Égalité dans le tour bonus → Undercover gagne
+      const players = room.players || {}
+      const undercover = Object.values(players).find(p => p.role === 'undercover')
+      await update(ref(db, `rooms/${code}`), {
+        state: 'ended',
+        isBonusRound: false,
+        isTiebreak: false,
+        tiedPlayers: null,
+        votes: {},
+        gameResult: {
+          gameOver: true,
+          winners: ['undercover'],
+          reason: "Égalité au tour bonus ! L'Undercover reste introuvable. Il gagne !",
+          bonusTieWin: true,
+        }
+      })
+      return { eliminated: null, tie: true, bonusTieWin: true }
+    }
+
+    if (isTiebreak) {
+      // Double égalité → tour bonus complet
+      const currentRound = room.currentRound || 1
+      await update(ref(db, `rooms/${code}`), {
+        state: 'playing',
+        currentRound: currentRound + 1,
+        isTiebreak: false,
+        isBonusRound: true,
+        tiedPlayers: null,
+        votes: {},
+        eliminatedThisRound: null,
+        speakingOrder: [],
+        currentSpeakerIndex: 0,
+      })
+      return { eliminated: null, tie: true, bonusRound: true }
+    }
+
+    // Première égalité → re-vote entre les joueurs à égalité
     await update(ref(db, `rooms/${code}`), {
-      state: 'results',
-      eliminatedThisRound: null,
+      state: 'tiebreak',
+      tiedPlayers: tied,
+      isTiebreak: true,
+      votes: {},
     })
-    return { eliminated: null, tie: true }
+    return { eliminated: null, tie: true, tiebreak: true }
   }
 
   const eliminatedId = sortedPlayers[0]

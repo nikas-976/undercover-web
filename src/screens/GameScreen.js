@@ -36,6 +36,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       case 'revealing': renderRevealPhase(room, me); break
       case 'playing':   renderPlayingPhase(room, me); break
       case 'voting':    renderVotingPhase(room, me); break
+      case 'tiebreak':  renderTiebreakPhase(room, me); break
       case 'results':   renderResultsPhase(room, me); break
       case 'ended':     renderEndedPhase(room, me); break
     }
@@ -125,7 +126,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     }
 
     // Host lance les indices — génère un ordre de parole aléatoire
-    if (isHost && allRevealed) {
+    if (isHost && (allRevealed || room.isBonusRound)) {
       document.getElementById('btn-start-playing')?.addEventListener('click', async () => {
         const alivePlayers = Object.values(room.players || {}).filter(p => !p.isEliminated)
         const shuffle = arr => {
@@ -153,7 +154,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
   function renderPlayingPhase(room, me) {
     const players            = Object.values(room.players || {}).filter(p => !p.isEliminated)
     const isHost             = room.creatorId === playerId
-    const speakingOrder      = room.speakingOrder || players.map(p => p.id)
+    const isBonusRound       = room.isBonusRound === true
+    const speakingOrder      = (room.speakingOrder && room.speakingOrder.length > 0) ? room.speakingOrder : players.map(p => p.id)
+    const needsOrderGen      = isBonusRound && (!room.speakingOrder || room.speakingOrder.length === 0)
     const currentIndex       = room.currentSpeakerIndex ?? 0
     const currentSpeakerId   = speakingOrder[currentIndex]
     const isLastSpeaker      = currentIndex >= speakingOrder.length - 1
@@ -168,7 +171,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     document.getElementById('game-container').innerHTML = `
       <div class="flex flex-col min-h-screen gap-4">
 
-        ${renderHeader('Tour ' + room.currentRound + ' — Indices' + (isDoublePasse ? ' · Passe ' + currentPass + '/2' : ''), room.currentRound, room)}
+        ${renderHeader((isBonusRound ? '⚡ Tour BONUS' : 'Tour ' + room.currentRound) + ' — Indices' + (isDoublePasse ? ' · Passe ' + currentPass + '/2' : ''), room.currentRound, room)}
         ${room.currentTwist ? renderTwistBanner(room.currentTwist) : ''}
 
         <!-- Rappel mot secret -->
@@ -254,14 +257,21 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         <!-- Contrôles hôte -->
         ${isHost ? `
           <div class="mt-auto flex flex-col gap-2">
-            ${!isLastSpeaker ? `
-              <button id="btn-next-speaker" class="btn-primary w-full text-base">
-                ➡️ Joueur suivant
+            ${needsOrderGen ? `
+              <div class="card p-3 text-center" style="border-color: rgba(245,158,11,0.4);">
+                <p class="text-xs font-mono mb-2" style="color: var(--amber-glow);">⚡ Tour bonus — double égalité !</p>
+                <button id="btn-gen-order" class="btn-warning w-full text-sm">🎲 Générer l'ordre de passage</button>
+              </div>
+            ` : `
+              ${!isLastSpeaker ? `
+                <button id="btn-next-speaker" class="btn-primary w-full text-base">
+                  ➡️ Joueur suivant
+                </button>
+              ` : ''}
+              <button id="btn-go-vote" class="${isLastSpeaker ? 'btn-danger' : 'btn-ghost'} w-full text-base">
+                🗳️ ${isLastSpeaker ? 'Passer au vote' : 'Forcer le vote'}
               </button>
-            ` : ''}
-            <button id="btn-go-vote" class="${isLastSpeaker ? 'btn-danger' : 'btn-ghost'} w-full text-base">
-              🗳️ ${isLastSpeaker ? 'Passer au vote' : 'Forcer le vote'}
-            </button>
+            `}
           </div>
         ` : `
           <div class="mt-auto text-center py-3">
@@ -274,6 +284,20 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     `
 
     if (isHost) {
+      // Générer l'ordre (tour bonus)
+      document.getElementById('btn-gen-order')?.addEventListener('click', async () => {
+        const ids = players.map(p => p.id)
+        const shuffle = arr => {
+          const a = [...arr]
+          for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [a[i], a[j]] = [a[j], a[i]]
+          }
+          return a
+        }
+        await startPlayingPhase(roomCode, shuffle(ids))
+      })
+
       // Passer au joueur suivant
       document.getElementById('btn-next-speaker')?.addEventListener('click', async () => {
         const { db: database } = await import('../firebase.js')
@@ -305,6 +329,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     const myCurrentVote = votes[playerId] || null
     voteSubmitted       = !!myCurrentVote
     const allVoted      = Object.keys(votes).length >= alivePlayers.length
+    const isTiebreak    = false
 
     document.getElementById('game-container').innerHTML = `
       <div class="flex flex-col min-h-screen gap-5">
@@ -409,7 +434,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     if (autoVoteCount >= autoTotalAlive && autoTotalAlive > 0 && autoIsHost) {
       setTimeout(async () => {
         const result = await processVotes(roomCode)
-        if (result?.tie) showToast("Égalité ! Personne n'est éliminé.", 'info')
+        if (result?.tiebreak)   showToast("Égalité ! Re-vote en cours...", 'info')
+        else if (result?.bonusRound)   showToast("Double égalité ! Tour bonus lancé.", 'info')
+        else if (result?.bonusTieWin)  showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
       }, 800)
     }
 
@@ -419,7 +446,132 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       const btn = document.getElementById('btn-finalize-vote')
       if (btn) { btn.disabled = true; btn.textContent = 'Calcul...' }
       const result = await processVotes(roomCode)
-      if (result?.tie) showToast("Égalité ! Personne n'est éliminé.", 'info')
+      if (result?.tiebreak)   showToast("Égalité ! Re-vote en cours...", 'info')
+      else if (result?.bonusRound)   showToast("Double égalité ! Tour bonus lancé.", 'info')
+      else if (result?.bonusTieWin)  showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
+    })
+  }
+
+  // =============================================
+  // PHASE 3b : RE-VOTE (TIEBREAK)
+  // =============================================
+
+  function renderTiebreakPhase(room, me) {
+    if (me.isEliminated) { renderEliminatedWaiting(); return }
+
+    const tiedIds       = room.tiedPlayers || []
+    const allPlayers    = Object.values(room.players || {}).filter(p => !p.isEliminated)
+    const tiedPlayers   = allPlayers.filter(p => tiedIds.includes(p.id))
+    const votes         = room.votes || {}
+    const myCurrentVote = votes[playerId] || null
+    let tbSubmitted     = !!myCurrentVote
+    const allVoted      = Object.keys(votes).length >= allPlayers.length
+
+    document.getElementById('game-container').innerHTML = `
+      <div class="flex flex-col min-h-screen gap-5">
+        ${renderHeader('Tour ' + room.currentRound + ' — Re-vote', room.currentRound, room)}
+
+        <!-- Bannière égalité -->
+        <div class="card p-4 text-center" style="border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.06);">
+          <p class="text-2xl mb-1">⚖️</p>
+          <p class="font-display font-bold text-lg" style="color: var(--amber-glow);">Égalité !</p>
+          <p class="text-sm mt-1" style="color: rgba(226,232,240,0.7);">
+            ${tiedPlayers.map(p => p.pseudo).join(' et ')} ont le même nombre de votes.<br>
+            Re-votez uniquement entre eux.
+          </p>
+        </div>
+
+        <!-- Rappel mot -->
+        ${renderWordCardRevealed(me)}
+
+        <!-- Boutons re-vote (seulement les joueurs à égalité) -->
+        <div class="flex flex-col gap-2">
+          ${tiedPlayers.map(p => {
+            const voteCount = Object.values(votes).filter(v => v === p.id).length
+            const isSelected = myCurrentVote === p.id
+            const isMe = p.id === playerId
+            return `
+              <button
+                class="vote-btn ${isSelected ? 'selected' : ''}"
+                data-player-id="${p.id}"
+                ${(isMe || (allVoted && !isSelected)) ? 'disabled' : ''}
+              >
+                <div class="flex items-center gap-3">
+                  <div class="player-avatar w-8 h-8 text-xs" style="background: ${getAvatarColor(p.id)}; width:32px; height:32px; min-width:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700;">
+                    ${p.pseudo.slice(0, 2).toUpperCase()}
+                  </div>
+                  <span class="font-body text-sm">${p.pseudo}${isMe ? ' (toi — ne peut pas voter pour soi)' : ''}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  ${voteCount > 0 ? `<span class="text-xs font-mono px-2 py-0.5 rounded" style="background: rgba(245,158,11,0.1); color: var(--amber-glow);">${voteCount} vote${voteCount > 1 ? 's' : ''}</span>` : ''}
+                  ${isSelected ? '<span style="color: #ef4444;">✓</span>' : ''}
+                </div>
+              </button>
+            `
+          }).join('')}
+        </div>
+
+        <!-- Compteur -->
+        <div class="card p-4">
+          <div class="flex justify-between items-center mb-2">
+            <span class="text-xs font-mono" style="color: var(--text-muted);">Votes reçus</span>
+            <span class="text-xs font-mono" style="color: var(--amber-glow);">${Object.keys(votes).length} / ${allPlayers.length}</span>
+          </div>
+          <div class="vote-progress">
+            <div class="vote-progress-fill" style="width: ${(Object.keys(votes).length / Math.max(1, allPlayers.length)) * 100}%; background: var(--amber-glow);"></div>
+          </div>
+        </div>
+
+        <!-- Host controls -->
+        ${room.creatorId === playerId ? (() => {
+          const voteCount = Object.keys(votes).length
+          const noVote = voteCount === 0
+          return `
+            <div class="mt-auto flex flex-col gap-2">
+              ${!allVoted && !noVote ? `<p class="text-xs text-center font-mono" style="color: var(--amber-glow);">⚠️ ${allPlayers.length - voteCount} joueur(s) n'ont pas encore voté</p>` : ''}
+              <button id="btn-finalize-tiebreak" class="w-full text-base ${allVoted ? 'btn-danger' : noVote ? 'btn-ghost' : 'btn-warning'}" ${noVote ? 'disabled' : ''}>
+                ⚖️ ${allVoted ? 'Finaliser le re-vote' : noVote ? 'En attente...' : 'Forcer la finalisation'}
+              </button>
+            </div>
+          `
+        })() : `
+          <div class="mt-auto text-center py-3">
+            <p class="text-xs font-mono" style="color: var(--text-muted);">En attente du re-vote...</p>
+          </div>
+        `}
+      </div>
+    `
+
+    // Voter
+    document.querySelectorAll('.vote-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (allVoted) return
+        const targetId = btn.getAttribute('data-player-id')
+        if (targetId === playerId) return // ne peut pas voter pour soi
+        const isChanging = tbSubmitted && myCurrentVote !== targetId
+        tbSubmitted = true
+        await castVote(roomCode, playerId, targetId)
+        showToast(isChanging ? 'Vote modifié !' : 'Vote enregistré !', 'success')
+      })
+    })
+
+    // Auto-finalisation
+    if (allVoted && room.creatorId === playerId) {
+      setTimeout(async () => {
+        const result = await processVotes(roomCode)
+        if (result?.bonusRound) showToast("Double égalité ! Tour bonus lancé.", 'info')
+        else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
+      }, 800)
+    }
+
+    // Finalisation manuelle hôte
+    document.getElementById('btn-finalize-tiebreak')?.addEventListener('click', async () => {
+      if (Object.keys(votes).length === 0) return
+      const btn = document.getElementById('btn-finalize-tiebreak')
+      if (btn) { btn.disabled = true; btn.textContent = 'Calcul...' }
+      const result = await processVotes(roomCode)
+      if (result?.bonusRound) showToast("Double égalité ! Tour bonus lancé.", 'info')
+      else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
     })
   }
 
