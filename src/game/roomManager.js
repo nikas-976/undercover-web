@@ -309,7 +309,37 @@ export async function nextRound(code, newTwist) {
 // TERMINER LA PARTIE
 // =============================================
 
+/**
+ * Termine la partie.
+ * Si appelé sans gameResult explicite (arrêt forcé), construit un classement
+ * à partir des scores actuels de la room.
+ */
 export async function endGame(code, gameResult) {
+  // Si arrêt forcé (pas de vrai gagnant de partie), on crée un classement
+  if (!gameResult || gameResult.forced) {
+    const snap    = await get(ref(db, `rooms/${code}`))
+    const room    = snap.val()
+    const players = Object.values(room?.players || {})
+    const scores  = room?.scores || {}
+
+    const ranked = [...players].sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0))
+    const topScore = ranked.length > 0 ? (scores[ranked[0].id] || 0) : 0
+    const winners = ranked.filter(p => (scores[p.id] || 0) >= topScore && topScore > 0)
+
+    gameResult = {
+      gameOver:    true,
+      forced:      true,
+      winners:     winners.map(p => p.role),
+      winnerIds:   winners.map(p => p.id),
+      finalScores: scores,
+      reason:      winners.length === 0
+        ? "Partie interrompue par l'hôte. Aucun point marqué."
+        : winners.length > 1
+          ? `Partie interrompue — Égalité entre ${winners.map(p => p.pseudo).join(' & ')} (${topScore} pts).`
+          : `Partie interrompue — ${winners[0].pseudo} mène avec ${topScore} pts.`,
+    }
+  }
+
   await update(ref(db, `rooms/${code}`), {
     state: 'ended',
     gameResult,

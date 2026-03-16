@@ -8,7 +8,7 @@ import {
   castVote, processVotes, nextRound, endGame, deleteRoom,
   submitWord, endRound, startNextRound,
 } from '../game/roomManager.js'
-import { getRoleConfig, checkWinCondition, ROLES } from '../game/roles.js'
+import { getRoleConfig, checkWinCondition, assignRoles, ROLES } from '../game/roles.js'
 import { generateTwist } from '../game/twists.js'
 import { formatTwistDescription } from '../game/twists.js'
 import { showToast, getAvatarColor } from '../utils.js'
@@ -155,11 +155,12 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
   // =============================================
 
   function renderPlayingPhase(room, me) {
-    const players       = Object.values(room.players || {}).filter(p => !p.isEliminated)
-    const isHost        = room.creatorId === playerId
-    const isBonusRound  = room.isBonusRound === true
-    const settings      = room.settings || {}
-    const useNotes      = !!settings.useNotes
+    const players        = Object.values(room.players || {}).filter(p => !p.isEliminated)
+    const isHost         = room.creatorId === playerId
+    const isBonusRound   = room.isBonusRound === true
+    const settings       = room.settings || {}
+    const useNotes       = !!settings.useNotes
+    const useTextInput   = settings.useTextInput !== false  // true by default
     // Convert Firebase wordHistory to arrays (handles null, string, array, or numeric-key object)
     const rawHistory  = room.wordHistory || {}
     const wordHistory = {}
@@ -195,35 +196,42 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         ${room.currentTwist ? renderTwistBanner(room.currentTwist) : ''}
         ${renderWordCardRevealed(me)}
 
-        <!-- C'est mon tour : input -->
+        <!-- C'est mon tour : texte ou oral selon settings -->
         ${needsOrderGen ? '' : isMyTurn ? `
           <div class="card p-5" style="border-color: rgba(0,245,212,0.5); background: rgba(0,245,212,0.05); box-shadow: 0 0 20px rgba(0,245,212,0.08);">
             <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--cyan-glow);">🎤 À toi de jouer !</p>
-            <p class="text-xs mb-3" style="color: rgba(226,232,240,0.6);">Donne un mot en rapport avec ton mot secret, sans le dire directement.</p>
-            <div class="flex gap-2">
-              <input id="word-input" type="text" maxlength="30"
-                placeholder="Ton indice..."
-                class="flex-1 px-4 py-3 rounded-lg text-sm font-body"
-                style="background: rgba(2,8,23,0.8); border: 1px solid rgba(0,245,212,0.3); color: #f8fafc; outline: none;"
-                autocomplete="off" autocorrect="off" />
-              <button id="btn-submit-word" class="btn-primary px-5 py-3 text-sm">
-                Envoyer ↵
-              </button>
-            </div>
-            <p class="text-xs mt-2 text-center" style="color: var(--text-muted);">
-              ${indexInPass + 1}/${halfLen} · ${isDoublePasse ? 'Passe ' + currentPass + '/2' : 'Tour ' + room.currentRound}
-            </p>
+            ${useTextInput ? `
+              <p class="text-xs mb-3" style="color: rgba(226,232,240,0.6);">Donne un mot en rapport avec ton mot secret, sans le dire directement.</p>
+              <div class="flex gap-2">
+                <input id="word-input" type="text" maxlength="30"
+                  placeholder="Ton indice..."
+                  class="flex-1 px-4 py-3 rounded-lg text-sm font-body"
+                  style="background: rgba(2,8,23,0.8); border: 1px solid rgba(0,245,212,0.3); color: #f8fafc; outline: none;"
+                  autocomplete="off" autocorrect="off" />
+                <button id="btn-submit-word" class="btn-primary px-5 py-3 text-sm">
+                  Envoyer ↵
+                </button>
+              </div>
+              <p class="text-xs mt-2 text-center" style="color: var(--text-muted);">
+                ${indexInPass + 1}/${halfLen} · ${isDoublePasse ? 'Passe ' + currentPass + '/2' : 'Tour ' + room.currentRound}
+              </p>
+            ` : `
+              <p class="text-sm" style="color: rgba(226,232,240,0.8);">Donne ton indice à voix haute, puis l'hôte passera au joueur suivant.</p>
+              <p class="text-xs mt-2 text-center font-mono" style="color: var(--text-muted);">
+                ${indexInPass + 1}/${halfLen} · Mode oral 🎤
+              </p>
+            `}
           </div>
         ` : `
           <div class="card p-4 text-center" style="border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.04);">
-            <p class="text-xs font-mono uppercase tracking-widest mb-2" style="color: var(--amber-glow);">⏳ C'est son tour…</p>
+            <p class="text-xs font-mono uppercase tracking-widest mb-2" style="color: var(--amber-glow);">${useTextInput ? "⏳ C'est son tour…" : '🎤 ' + (currentSpeaker ? currentSpeaker.pseudo : '???') + ' parle…'}</p>
             <div class="flex items-center justify-center gap-3">
               <div style="width:36px; height:36px; border-radius:50%; background:${getAvatarColor(currentSpeakerId)}; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:0.8rem;">
                 ${currentSpeaker ? currentSpeaker.pseudo.slice(0,2).toUpperCase() : '??'}
               </div>
               <p class="font-display font-bold text-white">${currentSpeaker ? currentSpeaker.pseudo : '???'}</p>
             </div>
-            <div class="flex justify-center mt-3"><div class="spinner"></div></div>
+            ${useTextInput ? '<div class="flex justify-center mt-3"><div class="spinner"></div></div>' : ''}
           </div>
         `}
 
@@ -282,24 +290,35 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
           </div>
         </div>
 
-        ${isHost && needsOrderGen ? `
-          <div class="mt-auto card p-4 text-center" style="border-color:rgba(245,158,11,0.4);">
-            <p class="text-xs font-mono mb-2" style="color:var(--amber-glow);">⚡ Tour bonus — génère l'ordre de passage</p>
-            <button id="btn-gen-order" class="btn-warning w-full text-sm">🎲 Générer l'ordre</button>
-          </div>
-        ` : isHost && isLastSpeaker && !isMyTurn ? `
-          <div class="mt-auto">
-            <button id="btn-force-next" class="btn-ghost w-full text-sm">
-              ⏭ Passer si quelqu'un est AFK
-            </button>
+        ${isHost ? `
+          <div class="mt-auto flex flex-col gap-2">
+            ${needsOrderGen ? `
+              <div class="card p-4 text-center" style="border-color:rgba(245,158,11,0.4);">
+                <p class="text-xs font-mono mb-2" style="color:var(--amber-glow);">⚡ Tour bonus — génère l'ordre de passage</p>
+                <button id="btn-gen-order" class="btn-warning w-full text-sm">🎲 Générer l'ordre</button>
+              </div>
+            ` : !useTextInput ? `
+              ${!isLastSpeaker ? `
+                <button id="btn-next-speaker" class="btn-primary w-full text-base">
+                  ➡️ Joueur suivant
+                </button>
+              ` : ''}
+              <button id="btn-go-vote" class="${isLastSpeaker ? 'btn-danger' : 'btn-ghost'} w-full text-base">
+                🗳️ ${isLastSpeaker ? 'Passer au vote' : 'Forcer le vote'}
+              </button>
+            ` : isLastSpeaker && !isMyTurn ? `
+              <button id="btn-force-next" class="btn-ghost w-full text-sm">
+                ⏭ Passer si quelqu'un est AFK (mode texte)
+              </button>
+            ` : ''}
           </div>
         ` : ''}
 
       </div>
     `
 
-    // Word input handlers
-    if (isMyTurn && !needsOrderGen) {
+    // ── Mode TEXTE : saisie de mot ──
+    if (useTextInput && isMyTurn && !needsOrderGen) {
       const input = document.getElementById('word-input')
       const btn   = document.getElementById('btn-submit-word')
 
@@ -316,8 +335,25 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       setTimeout(() => input?.focus(), 100)
     }
 
-    // Bonus round order generation
-    if (isHost) {
+    // ── Mode ORAL : boutons hôte ──
+    if (!useTextInput && isHost && !needsOrderGen) {
+      // Passer au joueur suivant
+      document.getElementById('btn-next-speaker')?.addEventListener('click', async () => {
+        const { db: database } = await import('../firebase.js')
+        const { ref: dbRef, set: dbSet } = await import('firebase/database')
+        await dbSet(dbRef(database, `rooms/${roomCode}/currentSpeakerIndex`), currentIndex + 1)
+      })
+
+      // Passer au vote quand tout le monde a parlé
+      document.getElementById('btn-go-vote')?.addEventListener('click', async () => {
+        const { db: database } = await import('../firebase.js')
+        const { ref: dbRef, update: dbUpdate } = await import('firebase/database')
+        await dbUpdate(dbRef(database, `rooms/${roomCode}`), { state: 'voting', votes: {} })
+      })
+    }
+
+    // ── Bonus round order generation (tous modes) ──
+    if (isHost && needsOrderGen) {
       document.getElementById('btn-gen-order')?.addEventListener('click', async () => {
         const ids = players.map(p => p.id)
         const shuffle = arr => {
@@ -328,13 +364,14 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
           }
           return a
         }
-        // Tour bonus = 1 seul indice par joueur (single pass)
         const order = shuffle(ids)
         await startPlayingPhase(roomCode, order)
       })
+    }
 
+    // ── AFK skip (mode texte uniquement) ──
+    if (useTextInput && isHost && !needsOrderGen) {
       document.getElementById('btn-force-next')?.addEventListener('click', async () => {
-        // Skip current speaker if AFK — submit empty marker
         await submitWord(roomCode, currentSpeakerId, '(passé)')
       })
     }
@@ -730,9 +767,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       await endRound(roomCode, winResult)
     })
 
-    // Force end
+    // Arrêt forcé → classe les joueurs par score actuel
     document.getElementById('btn-end-game-early')?.addEventListener('click', async () => {
-      await endGame(roomCode, { gameOver: true, winners: [], reason: 'Partie terminée par l\'hôte.' })
+      await endGame(roomCode, { forced: true })
     })
   }
 
@@ -880,8 +917,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         const pool = st.length === 0 ? getPairsForTheme('all') : st.flatMap(id => getPairsForTheme(id))
         const raw = pool[Math.floor(Math.random() * pool.length)]
         const wordPair = Math.random() < 0.5 ? raw : { civil: raw.undercover, undercover: raw.civil }
-        const assignedRoles = assignRoles(playerIds, wordPair)
-        const alivePseudos = playerIds.map(id => ({ id, pseudo: freshRoom.players[id].pseudo }))
+        const freshSettings = freshRoom.settings || {}
+        const assignedRoles = assignRoles(playerIds, wordPair, freshSettings)
+        const alivePseudos  = playerIds.map(id => ({ id, pseudo: freshRoom.players[id].pseudo }))
         const twist = generateTwist(alivePseudos)
 
         await startNextRound(roomCode, wordPair, assignedRoles, twist, st)
@@ -894,24 +932,25 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       }
     })
 
-    // Victoire finale
+    // Victoire finale — gère l'égalité parfaite
     document.getElementById('btn-final-victory')?.addEventListener('click', async () => {
       const topScore = Math.max(...Object.values(scores).map(Number))
-      const winners = players.filter(p => (scores[p.id] || 0) >= topScore)
+      const winners  = players.filter(p => (scores[p.id] || 0) >= topScore)
       await endGame(roomCode, {
-        gameOver: true,
-        winners:  winners.map(p => p.role),
-        winnerIds: winners.map(p => p.id),
-        reason:   winners.length === 1
-          ? `${winners[0].pseudo} remporte la partie avec ${topScore} points !`
-          : `Égalité parfaite ! ${winners.map(p => p.pseudo).join(' & ')} gagnent avec ${topScore} pts !`,
+        gameOver:    true,
+        winners:     winners.map(p => p.role),
+        winnerIds:   winners.map(p => p.id),
         finalScores: scores,
+        equality:    winners.length > 1,
+        reason:      winners.length === 1
+          ? `🏆 ${winners[0].pseudo} remporte la partie avec ${topScore} pts !`
+          : `🤝 Égalité parfaite ! ${winners.map(p => p.pseudo).join(' & ')} gagnent ex-æquo avec ${topScore} pts !`,
       })
     })
 
-    // Terminer tôt
+    // Arrêt forcé depuis fin de manche
     document.getElementById('btn-end-early')?.addEventListener('click', async () => {
-      await endGame(roomCode, { gameOver: true, winners: [], reason: 'Partie terminée par l\'hôte.' })
+      await endGame(roomCode, { forced: true })
     })
   }
 
@@ -936,11 +975,12 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         ${renderHeader('Victoire Finale 🏆', room.currentRound, room)}
 
         <!-- Winner banner -->
-        <div class="card p-6 text-center" style="border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.06);">
-          <p class="text-4xl mb-3">🏆</p>
-          <p class="font-display font-bold text-xl" style="color: var(--amber-glow);">
+        <div class="card p-6 text-center" style="border-color: ${result?.forced ? 'rgba(148,163,184,0.3)' : result?.equality ? 'rgba(99,102,241,0.5)' : 'rgba(245,158,11,0.5)'}; background: ${result?.forced ? 'rgba(148,163,184,0.04)' : result?.equality ? 'rgba(99,102,241,0.05)' : 'rgba(245,158,11,0.06)'};">
+          <p class="text-4xl mb-3">${result?.forced ? '🛑' : result?.equality ? '🤝' : '🏆'}</p>
+          <p class="font-display font-bold text-xl" style="color: ${result?.forced ? 'rgba(148,163,184,0.8)' : result?.equality ? '#818cf8' : 'var(--amber-glow)'};">
             ${result?.reason || 'La partie est terminée !'}
           </p>
+          ${result?.forced ? '<p class="text-xs mt-2 font-mono" style="color: var(--text-muted);">Classement au moment de l\'arrêt</p>' : ''}
         </div>
 
         <!-- Classement final avec scores -->
