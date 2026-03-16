@@ -132,22 +132,27 @@ export async function joinRoom(code, playerId, playerPseudo) {
 // LANCER LA PARTIE
 // =============================================
 
-export async function startGame(code, wordPair, assignedRoles, twist, selectedTheme = 'all') {
+export async function startGame(code, wordPair, assignedRoles, twist, selectedThemes, settings = {}) {
   const updates = {}
 
-  updates[`rooms/${code}/state`]          = 'revealing'
-  updates[`rooms/${code}/currentRound`]   = 1
-  updates[`rooms/${code}/wordPair`]       = wordPair
-  updates[`rooms/${code}/currentTwist`]   = twist
-  updates[`rooms/${code}/selectedTheme`]  = selectedTheme
-  updates[`rooms/${code}/votes`]          = {}
-  updates[`rooms/${code}/isTiebreak`]     = false
-  updates[`rooms/${code}/isBonusRound`]   = false
-  updates[`rooms/${code}/tiedPlayers`]    = null
+  updates[`rooms/${code}/state`]               = 'revealing'
+  updates[`rooms/${code}/currentRound`]        = 1
+  updates[`rooms/${code}/wordPair`]            = wordPair
+  updates[`rooms/${code}/currentTwist`]        = twist
+  updates[`rooms/${code}/selectedThemes`]      = selectedThemes || []
+  updates[`rooms/${code}/settings`]            = { maxScore: 20, undercoversCount: 1, useMrWhite: false, useNotes: false, ...settings }
+  updates[`rooms/${code}/votes`]               = {}
+  updates[`rooms/${code}/wordHistory`]         = {}
+  updates[`rooms/${code}/isTiebreak`]          = false
+  updates[`rooms/${code}/isBonusRound`]        = false
+  updates[`rooms/${code}/tiedPlayers`]         = null
   updates[`rooms/${code}/eliminatedThisRound`] = null
-  updates[`rooms/${code}/gameResult`]     = null
-  updates[`rooms/${code}/speakingOrder`]  = []
+  updates[`rooms/${code}/gameResult`]          = null
+  updates[`rooms/${code}/speakingOrder`]       = []
   updates[`rooms/${code}/currentSpeakerIndex`] = 0
+  updates[`rooms/${code}/deltaScores`]         = null
+  updates[`rooms/${code}/winningSide`]         = null
+  updates[`rooms/${code}/maxScoreReached`]     = false
 
   // Assigne les rôles et mots aux joueurs
   for (const { uid, role, secretWord } of assignedRoles) {
@@ -157,6 +162,10 @@ export async function startGame(code, wordPair, assignedRoles, twist, selectedTh
     updates[`rooms/${code}/players/${uid}/isEliminated`]   = false
   }
 
+  // Init scores to 0
+  for (const { uid } of assignedRoles) {
+    updates[`rooms/${code}/scores/${uid}`] = 0
+  }
   await update(ref(db), updates)
 }
 
@@ -216,54 +225,56 @@ export async function processVotes(code) {
 
   // En cas d'égalité
   if (tied.length > 1) {
-    const isTiebreak  = room.isTiebreak  === true
     const isBonusRound = room.isBonusRound === true
 
     if (isBonusRound) {
-      // Égalité dans le tour bonus → Undercover gagne
-      const players = room.players || {}
-      const undercover = Object.values(players).find(p => p.role === 'undercover')
+      // Égalité au tour bonus → Undercover gagne cette manche
+      // On passe par round_end pour conserver les scores correctement
+      const allPlayers  = Object.values(room.players || {})
+      const settings    = room.settings || {}
+      const maxScore    = settings.maxScore || 20
+      const current     = room.scores || {}
+      const newScores   = { ...current }
+      const deltaScores = {}
+      allPlayers.forEach(p => { deltaScores[p.id] = 0 })
+
+      // Undercovers vivants uniquement
+      allPlayers.filter(p => !p.isEliminated && p.role === 'undercover')
+        .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 5; deltaScores[p.id] = 5 })
+
+      const maxReached = Object.values(newScores).some(s => Number(s) >= maxScore)
+
       await update(ref(db, `rooms/${code}`), {
-        state: 'ended',
-        isBonusRound: false,
-        isTiebreak: false,
-        tiedPlayers: null,
-        votes: {},
-        gameResult: {
-          gameOver: true,
-          winners: ['undercover'],
-          reason: "Égalité au tour bonus ! L'Undercover reste introuvable. Il gagne !",
-          bonusTieWin: true,
-        }
+        state:            'round_end',
+        scores:           newScores,
+        deltaScores,
+        winningSide:      'undercover',
+        maxScoreReached:  maxReached,
+        isBonusRound:     false,
+        isTiebreak:       false,
+        tiedPlayers:      null,
+        votes:            {},
+        bonusTieWin:      true,
+        eliminatedThisRound: null,
       })
       return { eliminated: null, tie: true, bonusTieWin: true }
     }
 
-    if (isTiebreak) {
-      // Double égalité → tour bonus complet
-      const currentRound = room.currentRound || 1
-      await update(ref(db, `rooms/${code}`), {
-        state: 'playing',
-        currentRound: currentRound + 1,
-        isTiebreak: false,
-        isBonusRound: true,
-        tiedPlayers: null,
-        votes: {},
-        eliminatedThisRound: null,
-        speakingOrder: [],
-        currentSpeakerIndex: 0,
-      })
-      return { eliminated: null, tie: true, bonusRound: true }
-    }
-
-    // Première égalité → re-vote entre les joueurs à égalité
+    // Première égalité → tour bonus direct (1 seul indice par joueur)
+    const currentRound = room.currentRound || 1
     await update(ref(db, `rooms/${code}`), {
-      state: 'tiebreak',
-      tiedPlayers: tied,
-      isTiebreak: true,
-      votes: {},
+      state:             'playing',
+      currentRound:      currentRound + 1,
+      isTiebreak:        false,
+      isBonusRound:      true,
+      tiedPlayers:       null,
+      votes:             {},
+      wordHistory:       {},
+      eliminatedThisRound: null,
+      speakingOrder:     [],
+      currentSpeakerIndex: 0,
     })
-    return { eliminated: null, tie: true, tiebreak: true }
+    return { eliminated: null, tie: true, bonusRound: true }
   }
 
   const eliminatedId = sortedPlayers[0]
@@ -332,4 +343,114 @@ export function subscribeToRoom(code, callback) {
     callback(snap.exists() ? snap.val() : null)
   })
   return () => off(roomRef)
+}
+
+// =============================================
+// V2 — SAISIE DE MOT (tour par tour)
+// =============================================
+
+export async function submitWord(code, uid, word) {
+  const roomRef = ref(db, `rooms/${code}`)
+  const snap    = await get(roomRef)
+  const room    = snap.val()
+  if (!room) return
+
+  const order   = room.speakingOrder || []
+  const idx     = room.currentSpeakerIndex ?? 0
+  const nextIdx = idx + 1
+  const allDone = nextIdx >= order.length
+
+  // Count existing words for this player to get the next slot index
+  const existing = room.wordHistory?.[uid] || {}
+  const wordCount = typeof existing === 'object' && !Array.isArray(existing)
+    ? Object.keys(existing).length
+    : (Array.isArray(existing) ? existing.length : 0)
+
+  // Write using room-level ref with relative paths
+  const updates = {
+    [`wordHistory/${uid}/${wordCount}`]: word,
+    currentSpeakerIndex: nextIdx,
+  }
+  if (allDone) {
+    updates.state = 'voting'
+    updates.votes = {}
+  }
+
+  await update(roomRef, updates)
+}
+
+// =============================================
+// V2 — FIN DE MANCHE + CALCUL DES SCORES
+// =============================================
+
+export async function endRound(code, winResult) {
+  const snap    = await get(ref(db, `rooms/${code}`))
+  const room    = snap.val()
+  const players = Object.values(room.players || {})
+  const current = room.scores || {}
+  const settings = room.settings || {}
+  const maxScore = settings.maxScore || 20
+
+  const newScores   = { ...current }
+  const deltaScores = {}
+  players.forEach(p => { deltaScores[p.id] = 0 })
+
+  const side = winResult?.winners?.includes('undercover') ? 'undercover' : 'civil'
+
+  if (side === 'civil') {
+    players.filter(p => !p.isEliminated && ['civil', 'indicator'].includes(p.role))
+      .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 2; deltaScores[p.id] = 2 })
+  } else {
+    // Undercovers vivants uniquement (pas de points si éliminé)
+    players.filter(p => !p.isEliminated && p.role === 'undercover')
+      .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 5; deltaScores[p.id] = 5 })
+  }
+  // Tourist survives to end: +3
+  players.filter(p => !p.isEliminated && p.role === 'tourist')
+    .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 3; deltaScores[p.id] += 3 })
+
+  const maxReached = Object.values(newScores).some(s => s >= maxScore)
+
+  await update(ref(db, `rooms/${code}`), {
+    state:        'round_end',
+    scores:       newScores,
+    deltaScores,
+    winningSide:  side,
+    maxScoreReached: maxReached,
+  })
+}
+
+// =============================================
+// V2 — MANCHE SUIVANTE (conserve les scores)
+// =============================================
+
+export async function startNextRound(code, wordPair, assignedRoles, twist, selectedThemes) {
+  const rSnap = await get(ref(db, `rooms/${code}/currentRound`))
+  const round  = rSnap.val() || 1
+
+  const updates = {}
+  updates[`rooms/${code}/state`]               = 'revealing'
+  updates[`rooms/${code}/currentRound`]        = 1  // Reset to round 1 for each new manche
+  updates[`rooms/${code}/wordPair`]            = wordPair
+  updates[`rooms/${code}/currentTwist`]        = twist
+  updates[`rooms/${code}/selectedThemes`]      = selectedThemes || []
+  updates[`rooms/${code}/votes`]               = {}
+  updates[`rooms/${code}/wordHistory`]         = {}
+  updates[`rooms/${code}/speakingOrder`]       = []
+  updates[`rooms/${code}/currentSpeakerIndex`] = 0
+  updates[`rooms/${code}/eliminatedThisRound`] = null
+  updates[`rooms/${code}/isTiebreak`]          = false
+  updates[`rooms/${code}/isBonusRound`]        = false
+  updates[`rooms/${code}/tiedPlayers`]         = null
+  updates[`rooms/${code}/deltaScores`]         = null
+  updates[`rooms/${code}/winningSide`]         = null
+  updates[`rooms/${code}/maxScoreReached`]     = false
+
+  for (const { uid, role, secretWord } of assignedRoles) {
+    updates[`rooms/${code}/players/${uid}/role`]          = role
+    updates[`rooms/${code}/players/${uid}/secretWord`]    = secretWord
+    updates[`rooms/${code}/players/${uid}/hasRevealedWord`] = false
+    updates[`rooms/${code}/players/${uid}/isEliminated`]  = false
+  }
+  await update(ref(db), updates)
 }

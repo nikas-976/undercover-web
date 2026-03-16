@@ -6,6 +6,7 @@
 import {
   subscribeToRoom, markWordRevealed, startPlayingPhase,
   castVote, processVotes, nextRound, endGame, deleteRoom,
+  submitWord, endRound, startNextRound,
 } from '../game/roomManager.js'
 import { getRoleConfig, checkWinCondition, ROLES } from '../game/roles.js'
 import { generateTwist } from '../game/twists.js'
@@ -36,7 +37,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       case 'revealing': renderRevealPhase(room, me); break
       case 'playing':   renderPlayingPhase(room, me); break
       case 'voting':    renderVotingPhase(room, me); break
-      case 'tiebreak':  renderTiebreakPhase(room, me); break
+      case 'tiebreak':  renderTiebreakPhase(room, me); break  // legacy fallback
+      case 'round_end':  renderRoundEndPhase(room, me); break
       case 'results':   renderResultsPhase(room, me); break
       case 'ended':     renderEndedPhase(room, me); break
     }
@@ -140,8 +142,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         const ids = alivePlayers.map(p => p.id)
         // Deux passes : ordre 1 puis ordre 2 différent
         const pass1 = shuffle(ids)
-        // Double passe uniquement au tour 1
-        const order = room.currentRound === 1 ? [...pass1, ...shuffle(ids)] : pass1
+        const pass2 = shuffle(ids)
+        // Double passe à chaque round : chaque joueur donne 2 indices
+        const order = [...pass1, ...pass2]
         await startPlayingPhase(roomCode, order)
       })
     }
@@ -152,139 +155,169 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
   // =============================================
 
   function renderPlayingPhase(room, me) {
-    const players            = Object.values(room.players || {}).filter(p => !p.isEliminated)
-    const isHost             = room.creatorId === playerId
-    const isBonusRound       = room.isBonusRound === true
-    const speakingOrder      = (room.speakingOrder && room.speakingOrder.length > 0) ? room.speakingOrder : players.map(p => p.id)
-    const needsOrderGen      = isBonusRound && (!room.speakingOrder || room.speakingOrder.length === 0)
-    const currentIndex       = room.currentSpeakerIndex ?? 0
-    const currentSpeakerId   = speakingOrder[currentIndex]
-    const isLastSpeaker      = currentIndex >= speakingOrder.length - 1
-    const isMyTurn           = currentSpeakerId === playerId
-    const currentSpeaker     = players.find(p => p.id === currentSpeakerId)
-    const isDoublePasse      = room.currentRound === 1
-    const halfLen            = isDoublePasse ? Math.floor(speakingOrder.length / 2) : speakingOrder.length
-    const currentPass        = (isDoublePasse && currentIndex >= halfLen) ? 2 : 1
-    const indexInPass        = currentPass === 2 ? currentIndex - halfLen : currentIndex
-    const passLength         = halfLen
+    const players       = Object.values(room.players || {}).filter(p => !p.isEliminated)
+    const isHost        = room.creatorId === playerId
+    const isBonusRound  = room.isBonusRound === true
+    const settings      = room.settings || {}
+    const useNotes      = !!settings.useNotes
+    // Convert Firebase wordHistory to arrays (handles null, string, array, or numeric-key object)
+    const rawHistory  = room.wordHistory || {}
+    const wordHistory = {}
+    Object.keys(rawHistory).forEach(uid => {
+      const raw = rawHistory[uid]
+      if (!raw) { wordHistory[uid] = []; return }
+      if (typeof raw === 'string') { wordHistory[uid] = [raw]; return }
+      if (Array.isArray(raw)) { wordHistory[uid] = raw.filter(Boolean); return }
+      // Firebase object {0: "word1", 1: "word2"} → sorted array
+      wordHistory[uid] = Object.keys(raw)
+        .sort((a, b) => Number(a) - Number(b))
+        .map(k => raw[k])
+        .filter(Boolean)
+    })
+
+    const speakingOrder = (room.speakingOrder && room.speakingOrder.length > 0) ? room.speakingOrder : players.map(p => p.id)
+    const currentIndex  = room.currentSpeakerIndex ?? 0
+    const currentSpeakerId = speakingOrder[currentIndex]
+    const isMyTurn      = currentSpeakerId === playerId
+    const isLastSpeaker = currentIndex >= speakingOrder.length - 1
+    const currentSpeaker = players.find(p => p.id === currentSpeakerId)
+    const needsOrderGen = isBonusRound && (!room.speakingOrder || room.speakingOrder.length === 0)
+
+    const isDoublePasse = !isBonusRound // tour bonus = 1 seul indice
+    const halfLen       = isDoublePasse ? Math.floor(speakingOrder.length / 2) : speakingOrder.length
+    const currentPass   = (isDoublePasse && currentIndex >= halfLen) ? 2 : 1
+    const indexInPass   = currentPass === 2 ? currentIndex - halfLen : currentIndex
 
     document.getElementById('game-container').innerHTML = `
       <div class="flex flex-col min-h-screen gap-4">
 
         ${renderHeader((isBonusRound ? '⚡ Tour BONUS' : 'Tour ' + room.currentRound) + ' — Indices' + (isDoublePasse ? ' · Passe ' + currentPass + '/2' : ''), room.currentRound, room)}
         ${room.currentTwist ? renderTwistBanner(room.currentTwist) : ''}
-
-        <!-- Rappel mot secret -->
         ${renderWordCardRevealed(me)}
 
-        <!-- Joueur actuel qui parle -->
-        <div class="card p-4 text-center" style="${isMyTurn
-          ? 'border-color: rgba(0,245,212,0.5); background: rgba(0,245,212,0.06); box-shadow: 0 0 16px rgba(0,245,212,0.1);'
-          : 'border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.04);'}">
-          <p class="text-xs font-mono uppercase tracking-widest mb-2"
-            style="color: ${isMyTurn ? 'var(--cyan-glow)' : 'var(--amber-glow)'};">
-            ${isMyTurn ? "🎤 C'est ton tour !" : "🎤 C'est son tour"}
-          </p>
-          <div class="flex items-center justify-center gap-3">
-            <div class="player-avatar" style="background: ${getAvatarColor(currentSpeakerId)}; width:44px; height:44px; min-width:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:1rem;">
-              ${currentSpeaker ? currentSpeaker.pseudo.slice(0, 2).toUpperCase() : '??'}
+        <!-- C'est mon tour : input -->
+        ${needsOrderGen ? '' : isMyTurn ? `
+          <div class="card p-5" style="border-color: rgba(0,245,212,0.5); background: rgba(0,245,212,0.05); box-shadow: 0 0 20px rgba(0,245,212,0.08);">
+            <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--cyan-glow);">🎤 À toi de jouer !</p>
+            <p class="text-xs mb-3" style="color: rgba(226,232,240,0.6);">Donne un mot en rapport avec ton mot secret, sans le dire directement.</p>
+            <div class="flex gap-2">
+              <input id="word-input" type="text" maxlength="30"
+                placeholder="Ton indice..."
+                class="flex-1 px-4 py-3 rounded-lg text-sm font-body"
+                style="background: rgba(2,8,23,0.8); border: 1px solid rgba(0,245,212,0.3); color: #f8fafc; outline: none;"
+                autocomplete="off" autocorrect="off" />
+              <button id="btn-submit-word" class="btn-primary px-5 py-3 text-sm">
+                Envoyer ↵
+              </button>
             </div>
-            <div class="text-left">
-              <p class="font-display font-bold text-white text-lg">${currentSpeaker ? currentSpeaker.pseudo : '???'}</p>
-              <p class="text-xs font-mono" style="color: var(--text-muted);">
-                ${isDoublePasse ? 'Passe ' + currentPass + '/2 · ' : ''}Joueur ${indexInPass + 1}/${passLength}
-              </p>
-            </div>
-          </div>
-          ${isMyTurn ? `
-            <p class="text-xs mt-3" style="color: rgba(0,245,212,0.7);">
-              Donne un indice sur ton mot sans le dire directement !
+            <p class="text-xs mt-2 text-center" style="color: var(--text-muted);">
+              ${indexInPass + 1}/${halfLen} · ${isDoublePasse ? 'Passe ' + currentPass + '/2' : 'Tour ' + room.currentRound}
             </p>
-          ` : ''}
-        </div>
+          </div>
+        ` : `
+          <div class="card p-4 text-center" style="border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.04);">
+            <p class="text-xs font-mono uppercase tracking-widest mb-2" style="color: var(--amber-glow);">⏳ C'est son tour…</p>
+            <div class="flex items-center justify-center gap-3">
+              <div style="width:36px; height:36px; border-radius:50%; background:${getAvatarColor(currentSpeakerId)}; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:0.8rem;">
+                ${currentSpeaker ? currentSpeaker.pseudo.slice(0,2).toUpperCase() : '??'}
+              </div>
+              <p class="font-display font-bold text-white">${currentSpeaker ? currentSpeaker.pseudo : '???'}</p>
+            </div>
+            <div class="flex justify-center mt-3"><div class="spinner"></div></div>
+          </div>
+        `}
 
-        <!-- Ordre de passage complet -->
+        <!-- Ordre de passage + historique mots -->
         <div>
           <p class="text-xs font-mono uppercase tracking-widest mb-2" style="color: var(--text-muted);">
             Ordre de passage
           </p>
           <div class="flex flex-col gap-1.5">
             ${speakingOrder.map((id, idx) => {
-              const p          = players.find(pl => pl.id === id)
-              const isCurrent  = idx === currentIndex
-              const isDone     = idx < currentIndex
-              const isMe       = id === playerId
-              const isPassBreak = idx === halfLen // séparateur entre passe 1 et passe 2
+              const p         = players.find(pl => pl.id === id)
+              const isCurrent = idx === currentIndex
+              const isDone    = idx < currentIndex
+              const isMe      = id === playerId
+              const words    = wordHistory[id] || []
               if (!p) return ''
-              return `
-                ${isDoublePasse && isPassBreak ? `
-                  <div class="flex items-center gap-2 my-1">
-                    <div class="flex-1 h-px" style="background: rgba(245,158,11,0.2);"></div>
-                    <span class="text-xs font-mono px-2" style="color: var(--amber-glow);">Passe 2</span>
-                    <div class="flex-1 h-px" style="background: rgba(245,158,11,0.2);"></div>
-                  </div>
-                ` : isDoublePasse && idx === 0 ? `
-                  <div class="flex items-center gap-2 mb-1">
-                    <div class="flex-1 h-px" style="background: rgba(0,245,212,0.2);"></div>
-                    <span class="text-xs font-mono px-2" style="color: var(--cyan-glow);">Passe 1</span>
-                    <div class="flex-1 h-px" style="background: rgba(0,245,212,0.2);"></div>
-                  </div>
-                ` : ''}
-                <div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all"
-                  style="
-                    background: ${isCurrent ? 'rgba(0,245,212,0.06)' : isDone ? 'rgba(255,255,255,0.02)' : 'transparent'};
-                    border: 1px solid ${isCurrent ? 'rgba(0,245,212,0.3)' : 'rgba(22,41,82,0.4)'};
-                    opacity: ${isDone ? '0.45' : '1'};
-                  ">
-                  <span class="text-xs font-mono w-5 text-center flex-shrink-0"
-                    style="color: ${isCurrent ? 'var(--cyan-glow)' : 'var(--text-muted)'};">
-                    ${isDone ? '✓' : (idx < halfLen ? idx + 1 : idx - halfLen + 1)}
-                  </span>
-                  <div class="player-avatar" style="background: ${getAvatarColor(id)}; width:28px; height:28px; min-width:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:0.65rem;">
-                    ${p.pseudo.slice(0, 2).toUpperCase()}
-                  </div>
-                  <span class="text-sm flex-1 ${isCurrent ? 'text-white font-medium' : ''}"
-                    style="${isCurrent ? '' : 'color: rgba(226,232,240,0.6)'}">
-                    ${p.pseudo}${isMe ? ' <span style="font-size:0.65rem; color: var(--text-muted)">(toi)</span>' : ''}
-                  </span>
-                  ${isCurrent ? '<span style="color: var(--cyan-glow); font-size: 0.75rem;">🎤</span>' : ''}
+              const isPassBreak = isDoublePasse && idx === halfLen
+              return (isPassBreak ? `
+                <div class="flex items-center gap-2 my-1">
+                  <div class="flex-1 h-px" style="background: rgba(245,158,11,0.2);"></div>
+                  <span class="text-xs font-mono px-2" style="color: var(--amber-glow);">Passe 2</span>
+                  <div class="flex-1 h-px" style="background: rgba(245,158,11,0.2);"></div>
                 </div>
+              ` : idx === 0 && isDoublePasse ? `
+                <div class="flex items-center gap-2 mb-1">
+                  <div class="flex-1 h-px" style="background: rgba(0,245,212,0.2);"></div>
+                  <span class="text-xs font-mono px-2" style="color: var(--cyan-glow);">Passe 1</span>
+                  <div class="flex-1 h-px" style="background: rgba(0,245,212,0.2);"></div>
+                </div>
+              ` : '') + `
+              <div class="flex items-start gap-3 px-3 py-2 rounded-lg transition-all"
+                style="background:${isCurrent ? 'rgba(0,245,212,0.06)' : isDone ? 'rgba(255,255,255,0.02)' : 'transparent'};
+                border:1px solid ${isCurrent ? 'rgba(0,245,212,0.3)' : 'rgba(22,41,82,0.4)'};
+                opacity:${isDone ? '0.6' : '1'};">
+                <span class="text-xs font-mono w-5 text-center flex-shrink-0 mt-1"
+                  style="color:${isCurrent ? 'var(--cyan-glow)' : 'var(--text-muted)'};">
+                  ${isDone ? '✓' : isCurrent ? '🎤' : (idx < halfLen ? idx + 1 : idx - halfLen + 1)}
+                </span>
+                <div style="width:26px; height:26px; min-width:26px; border-radius:50%; background:${getAvatarColor(id)}; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:0.6rem; flex-shrink:0;">
+                  ${p.pseudo.slice(0,2).toUpperCase()}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <span class="text-sm ${isCurrent ? 'text-white font-medium' : ''}"
+                    style="${isCurrent ? '' : 'color:rgba(226,232,240,0.7)'}">
+                    ${p.pseudo}${isMe ? ' <span style="font-size:0.6rem; color:var(--text-muted)">(toi)</span>' : ''}
+                  </span>
+                  ${useNotes && words.length > 0 ? `
+                    <div class="flex flex-wrap gap-1 mt-1">
+                      ${words.map((w, wi) => `<span class="text-xs px-1.5 py-0.5 rounded font-mono" style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); color:var(--amber-glow);">${wi+1}. ${w}</span>`).join('')}
+                    </div>
+                  ` : ''}
+                </div>
+              </div>
               `
             }).join('')}
           </div>
         </div>
 
-        <!-- Contrôles hôte -->
-        ${isHost ? `
-          <div class="mt-auto flex flex-col gap-2">
-            ${needsOrderGen ? `
-              <div class="card p-3 text-center" style="border-color: rgba(245,158,11,0.4);">
-                <p class="text-xs font-mono mb-2" style="color: var(--amber-glow);">⚡ Tour bonus — double égalité !</p>
-                <button id="btn-gen-order" class="btn-warning w-full text-sm">🎲 Générer l'ordre de passage</button>
-              </div>
-            ` : `
-              ${!isLastSpeaker ? `
-                <button id="btn-next-speaker" class="btn-primary w-full text-base">
-                  ➡️ Joueur suivant
-                </button>
-              ` : ''}
-              <button id="btn-go-vote" class="${isLastSpeaker ? 'btn-danger' : 'btn-ghost'} w-full text-base">
-                🗳️ ${isLastSpeaker ? 'Passer au vote' : 'Forcer le vote'}
-              </button>
-            `}
+        ${isHost && needsOrderGen ? `
+          <div class="mt-auto card p-4 text-center" style="border-color:rgba(245,158,11,0.4);">
+            <p class="text-xs font-mono mb-2" style="color:var(--amber-glow);">⚡ Tour bonus — génère l'ordre de passage</p>
+            <button id="btn-gen-order" class="btn-warning w-full text-sm">🎲 Générer l'ordre</button>
           </div>
-        ` : `
-          <div class="mt-auto text-center py-3">
-            <p class="text-xs font-mono" style="color: var(--text-muted);">
-              ${isLastSpeaker ? 'En attente du vote...' : 'En attente du joueur suivant...'}
-            </p>
+        ` : isHost && isLastSpeaker && !isMyTurn ? `
+          <div class="mt-auto">
+            <button id="btn-force-next" class="btn-ghost w-full text-sm">
+              ⏭ Passer si quelqu'un est AFK
+            </button>
           </div>
-        `}
+        ` : ''}
+
       </div>
     `
 
+    // Word input handlers
+    if (isMyTurn && !needsOrderGen) {
+      const input = document.getElementById('word-input')
+      const btn   = document.getElementById('btn-submit-word')
+
+      async function doSubmit() {
+        const word = input?.value?.trim()
+        if (!word) { showToast('Écris un mot !', 'info'); return }
+        if (btn) btn.disabled = true
+        if (input) input.disabled = true
+        await submitWord(roomCode, playerId, word)
+      }
+
+      btn?.addEventListener('click', doSubmit)
+      input?.addEventListener('keydown', e => { if (e.key === 'Enter') doSubmit() })
+      setTimeout(() => input?.focus(), 100)
+    }
+
+    // Bonus round order generation
     if (isHost) {
-      // Générer l'ordre (tour bonus)
       document.getElementById('btn-gen-order')?.addEventListener('click', async () => {
         const ids = players.map(p => p.id)
         const shuffle = arr => {
@@ -295,21 +328,14 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
           }
           return a
         }
-        await startPlayingPhase(roomCode, shuffle(ids))
+        // Tour bonus = 1 seul indice par joueur (single pass)
+        const order = shuffle(ids)
+        await startPlayingPhase(roomCode, order)
       })
 
-      // Passer au joueur suivant
-      document.getElementById('btn-next-speaker')?.addEventListener('click', async () => {
-        const { db: database } = await import('../firebase.js')
-        const { ref: dbRef, set: dbSet } = await import('firebase/database')
-        await dbSet(dbRef(database, `rooms/${roomCode}/currentSpeakerIndex`), currentIndex + 1)
-      })
-
-      // Passer au vote
-      document.getElementById('btn-go-vote')?.addEventListener('click', async () => {
-        const { db: database } = await import('../firebase.js')
-        const { ref: dbRef, update: dbUpdate } = await import('firebase/database')
-        await dbUpdate(dbRef(database, `rooms/${roomCode}`), { state: 'voting' })
+      document.getElementById('btn-force-next')?.addEventListener('click', async () => {
+        // Skip current speaker if AFK — submit empty marker
+        await submitWord(roomCode, currentSpeakerId, '(passé)')
       })
     }
   }
@@ -434,9 +460,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     if (autoVoteCount >= autoTotalAlive && autoTotalAlive > 0 && autoIsHost) {
       setTimeout(async () => {
         const result = await processVotes(roomCode)
-        if (result?.tiebreak)   showToast("Égalité ! Re-vote en cours...", 'info')
-        else if (result?.bonusRound)   showToast("Double égalité ! Tour bonus lancé.", 'info')
-        else if (result?.bonusTieWin)  showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
+        if (result?.bonusRound)    showToast("Égalité ! Tour bonus lancé (1 indice chacun).", 'info')
+        else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne la manche.", 'info')
       }, 800)
     }
 
@@ -446,9 +471,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       const btn = document.getElementById('btn-finalize-vote')
       if (btn) { btn.disabled = true; btn.textContent = 'Calcul...' }
       const result = await processVotes(roomCode)
-      if (result?.tiebreak)   showToast("Égalité ! Re-vote en cours...", 'info')
-      else if (result?.bonusRound)   showToast("Double égalité ! Tour bonus lancé.", 'info')
-      else if (result?.bonusTieWin)  showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
+      if (result?.bonusRound)    showToast("Égalité ! Tour bonus lancé (1 indice chacun).", 'info')
+      else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne la manche.", 'info')
     })
   }
 
@@ -559,8 +583,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     if (allVoted && room.creatorId === playerId) {
       setTimeout(async () => {
         const result = await processVotes(roomCode)
-        if (result?.bonusRound) showToast("Double égalité ! Tour bonus lancé.", 'info')
-        else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
+        if (result?.bonusRound) showToast("Égalité ! Tour bonus lancé.", 'info')
+        else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne la manche.", 'info')
       }, 800)
     }
 
@@ -570,8 +594,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       const btn = document.getElementById('btn-finalize-tiebreak')
       if (btn) { btn.disabled = true; btn.textContent = 'Calcul...' }
       const result = await processVotes(roomCode)
-      if (result?.bonusRound) showToast("Double égalité ! Tour bonus lancé.", 'info')
-      else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne.", 'error')
+      if (result?.bonusRound) showToast("Égalité ! Tour bonus lancé.", 'info')
+      else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne la manche.", 'info')
     })
   }
 
@@ -679,12 +703,12 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
                   <p class="text-xs font-mono" style="color: #ef4444;">⏱️ Limite de tours atteinte</p>
                 </div>
               ` : ''}
-              <button id="btn-end-game" class="btn-danger w-full text-base">
-                🏁 Voir les résultats finaux
+              <button id="btn-see-scores" class="btn-primary w-full text-base">
+                🏆 Voir les scores
               </button>
             ` : `
-              <button id="btn-next-round" class="btn-primary w-full text-base">
-                ▶ Tour ${room.currentRound + 1}/${maxRounds}
+              <button id="btn-see-scores" class="btn-primary w-full text-base">
+                🏆 Voir les scores
               </button>
               <button id="btn-end-game-early" class="btn-ghost w-full text-sm">
                 Terminer la partie
@@ -699,19 +723,11 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       </div>
     `
 
-    // Next round
-    document.getElementById('btn-next-round')?.addEventListener('click', async () => {
-      const alivePlayers = Object.values(room.players || {})
-        .filter(p => !p.isEliminated)
-        .map(p => ({ id: p.id, pseudo: p.pseudo }))
-      const twist = generateTwist(alivePlayers)
-      await nextRound(roomCode, twist)
-      voteSubmitted = false
-    })
-
-    // End game (win condition)
-    document.getElementById('btn-end-game')?.addEventListener('click', async () => {
-      await endGame(roomCode, winResult)
+    // Voir les scores → endRound → round_end state
+    document.getElementById('btn-see-scores')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-see-scores')
+      if (btn) { btn.disabled = true; btn.textContent = 'Calcul des scores...' }
+      await endRound(roomCode, winResult)
     })
 
     // Force end
@@ -721,54 +737,87 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
   }
 
   // =============================================
-  // PHASE 5 : FIN DE PARTIE
+  // PHASE 4b : FIN DE MANCHE + SCORES
   // =============================================
 
-  function renderEndedPhase(room, me) {
-    const result  = room.gameResult
-    const players = Object.values(room.players || {})
-    const isHost  = room.creatorId === playerId
+  function renderRoundEndPhase(room, me) {
+    const isHost      = room.creatorId === playerId
+    const players     = Object.values(room.players || {})
+    const scores      = room.scores || {}
+    const delta       = room.deltaScores || {}
+    const settings    = room.settings || {}
+    const maxScore    = settings.maxScore || 20
+    const maxReached  = room.maxScoreReached
+    const winningSide = room.winningSide
+    // En V2, la fin de PARTIE est uniquement basée sur le score max atteint
+    // (roundLimitHit ne force pas la fin du jeu — il détermine juste qui gagne la manche)
+    const forceEnd    = !!maxReached
+
+    // Sort by score desc
+    const ranked = [...players].sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0))
 
     document.getElementById('game-container').innerHTML = `
-      <div class="flex flex-col min-h-screen gap-5">
+      <div class="flex flex-col min-h-screen gap-4">
+        ${renderHeader('Fin de manche ' + room.currentRound, room.currentRound, room)}
 
-        ${renderHeader('Fin de partie', room.currentRound, room)}
-
-        <!-- Result banner -->
-        <div class="card p-6 text-center" style="border-color: rgba(0,245,212,0.3);">
-          <p class="text-4xl mb-4">🏆</p>
-          <p class="font-display font-bold text-xl mb-2" style="color: var(--cyan-glow);">
-            ${result?.reason || 'La partie est terminée !'}
+        <!-- Résultat manche -->
+        <div class="card p-5 text-center" style="border-color: ${winningSide === 'civil' ? 'rgba(0,245,212,0.4)' : 'rgba(239,68,68,0.4)'}; background: ${winningSide === 'civil' ? 'rgba(0,245,212,0.05)' : 'rgba(239,68,68,0.05)'};">
+          <p class="text-3xl mb-2">${room.bonusTieWin ? '⚖️' : winningSide === 'civil' ? '🎉' : '🕵️'}</p>
+          <p class="font-display font-bold text-xl" style="color: ${winningSide === 'civil' ? 'var(--cyan-glow)' : '#ef4444'};">
+            ${room.bonusTieWin
+              ? "Égalité au tour bonus ! L'Undercover gagne la manche."
+              : winningSide === 'civil' ? 'Les Civils gagnent cette manche !' : "L'Undercover gagne cette manche !"}
+          </p>
+          <p class="text-xs font-mono mt-2" style="color: var(--text-muted);">
+            ${winningSide === 'civil' ? '+2 pts par Civil en vie' : '+5 pts Undercover (vivant)'}
           </p>
         </div>
 
-        <!-- All players reveal -->
+        <!-- Scores -->
         <div>
           <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--text-muted);">
-            Tableau final
+            🏆 Classement · Objectif : ${maxScore} pts
           </p>
+          <!-- Progress bar global -->
+          <div class="card p-3 mb-3">
+            <div class="flex justify-between text-xs font-mono mb-2" style="color: var(--text-muted);">
+              <span>Progression</span><span>${maxScore} pts pour gagner</span>
+            </div>
+            <div style="background: rgba(22,41,82,0.6); border-radius: 4px; height: 4px; overflow: hidden;">
+              <div style="height: 100%; background: linear-gradient(90deg, var(--cyan-glow), var(--amber-glow)); border-radius:4px; width: ${Math.min(100, (Math.max(...Object.values(scores).map(Number)) / maxScore) * 100)}%;"></div>
+            </div>
+          </div>
+
           <div class="flex flex-col gap-2">
-            ${players.map(p => {
-              const rc = getRoleConfig(p.role)
-              const isWinner = result?.winners?.includes(p.role)
+            ${ranked.map((p, rank) => {
+              const sc   = scores[p.id] || 0
+              const d    = delta[p.id] || 0
+              const pct  = Math.min(100, (sc / maxScore) * 100)
+              const rc   = getRoleConfig(p.role)
               return `
-                <div class="player-item ${isWinner ? 'glow-cyan' : ''}"
-                  style="${isWinner ? 'border-color: rgba(0,245,212,0.3); background: rgba(0,245,212,0.04)' : ''}">
-                  <div class="player-avatar" style="background: ${getAvatarColor(p.id)}; width:36px; height:36px; min-width:36px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700;">
-                    ${p.pseudo.slice(0, 2).toUpperCase()}
+                <div class="card p-4" style="${rank === 0 ? 'border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.04);' : ''}">
+                  <div class="flex items-center gap-3 mb-2">
+                    <span class="text-base font-display font-bold flex-shrink-0" style="color: ${rank === 0 ? 'var(--amber-glow)' : 'var(--text-muted)'}; width: 20px;">
+                      ${rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1}
+                    </span>
+                    <div class="player-avatar flex-shrink-0" style="background: ${getAvatarColor(p.id)}; width:32px; height:32px; min-width:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:0.7rem;">
+                      ${p.pseudo.slice(0,2).toUpperCase()}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium text-white truncate">${p.pseudo}</span>
+                        <span class="role-badge ${rc.colorClass}" style="font-size:0.55rem; padding:1px 5px;">${rc.emoji} ${rc.label}</span>
+                      </div>
+                    </div>
+                    <div class="flex items-baseline gap-1 flex-shrink-0">
+                      <span class="text-lg font-display font-bold" style="color: var(--cyan-glow);">${sc}</span>
+                      <span class="text-xs font-mono" style="color: var(--text-muted);">/ ${maxScore}</span>
+                      ${d > 0 ? `<span class="text-xs font-mono font-bold ml-1" style="color: #4ade80;">+${d}</span>` : ''}
+                    </div>
                   </div>
-                  <div class="flex flex-col flex-1 min-w-0">
-                    <div class="flex items-center gap-2">
-                      <span class="text-sm font-medium truncate">${p.pseudo}</span>
-                      ${isWinner ? '<span class="text-xs" style="color: var(--cyan-glow);">🏆</span>' : ''}
-                      ${p.isEliminated ? '<span class="text-xs" style="color: rgba(239,68,68,0.6);">☠️</span>' : ''}
-                    </div>
-                    <div class="flex items-center gap-2 mt-0.5">
-                      <span class="role-badge ${rc.colorClass}" style="font-size:0.6rem; padding: 2px 6px;">
-                        ${rc.emoji} ${rc.label}
-                      </span>
-                      ${p.secretWord ? `<span class="text-xs" style="color: var(--text-muted);">"${p.secretWord}"</span>` : ''}
-                    </div>
+                  <!-- Score bar -->
+                  <div style="background: rgba(22,41,82,0.6); border-radius: 3px; height: 3px; overflow: hidden;">
+                    <div style="height: 100%; width: ${pct}%; background: ${sc >= maxScore ? '#f59e0b' : 'var(--cyan-glow)'}; border-radius:3px; transition: width 0.6s ease;"></div>
                   </div>
                 </div>
               `
@@ -776,49 +825,195 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
           </div>
         </div>
 
-        <!-- New game -->
+        ${forceEnd ? `
+          <div class="card p-4 text-center" style="border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.06);">
+            <p class="text-2xl mb-1">${maxReached ? '🏆' : '⏱️'}</p>
+            <p class="font-display font-bold text-lg" style="color: var(--amber-glow);">
+              ${maxReached ? 'Score maximum atteint !' : 'Limite de manches atteinte !'}
+            </p>
+            <p class="text-xs mt-1" style="color: var(--text-muted);">La victoire finale va être révélée…</p>
+          </div>
+        ` : ''}
+
+        <!-- CTA hôte -->
+        ${isHost ? `
+          <div class="mt-auto flex flex-col gap-2">
+            ${forceEnd ? `
+              <button id="btn-final-victory" class="btn-danger w-full text-base">
+                🏆 Voir le classement final
+              </button>
+            ` : `
+              <button id="btn-next-round" class="btn-primary w-full text-base">
+                ▶ Manche suivante
+              </button>
+              <button id="btn-end-early" class="btn-ghost w-full text-sm">Terminer la partie</button>
+            `}
+          </div>
+        ` : `
+          <div class="mt-auto text-center py-4">
+            <p class="text-sm" style="color: var(--text-muted);">En attente de l'hôte…</p>
+            <div class="flex justify-center mt-3 gap-1">
+              <div class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style="animation-delay:0ms"></div>
+              <div class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style="animation-delay:150ms"></div>
+              <div class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style="animation-delay:300ms"></div>
+            </div>
+          </div>
+        `}
+      </div>
+    `
+
+    // Manche suivante
+    document.getElementById('btn-next-round')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-next-round')
+      if (btn) { btn.disabled = true; btn.textContent = 'Préparation…' }
+      try {
+        const { getPairsForTheme } = await import('../data/words.js')
+        const { assignRoles } = await import('../game/roles.js')
+        const { generateTwist } = await import('../game/twists.js')
+        const { db: database } = await import('../firebase.js')
+        const { ref: dbRef, get: dbGet } = await import('firebase/database')
+
+        const snap = await dbGet(dbRef(database, `rooms/${roomCode}`))
+        const freshRoom = snap.val()
+        const playerIds = Object.keys(freshRoom.players || {})
+        const st = Array.isArray(freshRoom.selectedThemes) ? freshRoom.selectedThemes : []
+        const pool = st.length === 0 ? getPairsForTheme('all') : st.flatMap(id => getPairsForTheme(id))
+        const raw = pool[Math.floor(Math.random() * pool.length)]
+        const wordPair = Math.random() < 0.5 ? raw : { civil: raw.undercover, undercover: raw.civil }
+        const assignedRoles = assignRoles(playerIds, wordPair)
+        const alivePseudos = playerIds.map(id => ({ id, pseudo: freshRoom.players[id].pseudo }))
+        const twist = generateTwist(alivePseudos)
+
+        await startNextRound(roomCode, wordPair, assignedRoles, twist, st)
+        voteSubmitted = false
+      } catch(e) {
+        console.error('next round error', e)
+        showToast('Erreur lors du lancement de la manche.', 'error')
+        const b = document.getElementById('btn-next-round')
+        if (b) { b.disabled = false; b.textContent = '▶ Manche suivante' }
+      }
+    })
+
+    // Victoire finale
+    document.getElementById('btn-final-victory')?.addEventListener('click', async () => {
+      const topScore = Math.max(...Object.values(scores).map(Number))
+      const winners = players.filter(p => (scores[p.id] || 0) >= topScore)
+      await endGame(roomCode, {
+        gameOver: true,
+        winners:  winners.map(p => p.role),
+        winnerIds: winners.map(p => p.id),
+        reason:   winners.length === 1
+          ? `${winners[0].pseudo} remporte la partie avec ${topScore} points !`
+          : `Égalité parfaite ! ${winners.map(p => p.pseudo).join(' & ')} gagnent avec ${topScore} pts !`,
+        finalScores: scores,
+      })
+    })
+
+    // Terminer tôt
+    document.getElementById('btn-end-early')?.addEventListener('click', async () => {
+      await endGame(roomCode, { gameOver: true, winners: [], reason: 'Partie terminée par l\'hôte.' })
+    })
+  }
+
+  // =============================================
+  // PHASE 5 : FIN DE PARTIE
+  // =============================================
+
+  function renderEndedPhase(room, me) {
+    const result   = room.gameResult
+    const players  = Object.values(room.players || {})
+    const isHost   = room.creatorId === playerId
+    const scores   = result?.finalScores || room.scores || {}
+    const winnerIds = result?.winnerIds || []
+    const settings = room.settings || {}
+    const maxScore = settings.maxScore || 20
+
+    const ranked = [...players].sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0))
+
+    document.getElementById('game-container').innerHTML = `
+      <div class="flex flex-col min-h-screen gap-5">
+
+        ${renderHeader('Victoire Finale 🏆', room.currentRound, room)}
+
+        <!-- Winner banner -->
+        <div class="card p-6 text-center" style="border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.06);">
+          <p class="text-4xl mb-3">🏆</p>
+          <p class="font-display font-bold text-xl" style="color: var(--amber-glow);">
+            ${result?.reason || 'La partie est terminée !'}
+          </p>
+        </div>
+
+        <!-- Classement final avec scores -->
+        <div>
+          <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--text-muted);">
+            Classement final
+          </p>
+          <div class="flex flex-col gap-2">
+            ${ranked.map((p, rank) => {
+              const rc      = getRoleConfig(p.role)
+              const sc      = scores[p.id] || 0
+              const isWin   = winnerIds.includes(p.id)
+              const pct     = Math.min(100, (sc / maxScore) * 100)
+              return `
+                <div class="card p-4 ${isWin ? 'glow-cyan' : ''}"
+                  style="${isWin ? 'border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.05);' : ''}">
+                  <div class="flex items-center gap-3 mb-2">
+                    <span class="text-base font-display font-bold flex-shrink-0" style="color: ${rank === 0 ? 'var(--amber-glow)' : 'var(--text-muted)'}; width:20px;">
+                      ${rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank+1}
+                    </span>
+                    <div class="player-avatar flex-shrink-0" style="background: ${getAvatarColor(p.id)}; width:34px; height:34px; min-width:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:0.75rem;">
+                      ${p.pseudo.slice(0,2).toUpperCase()}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="text-sm font-medium text-white truncate">${p.pseudo}</span>
+                        ${isWin ? '<span style="color:var(--amber-glow); font-size:0.75rem;">🏆 Gagnant</span>' : ''}
+                        <span class="role-badge ${rc.colorClass}" style="font-size:0.55rem; padding:1px 5px;">${rc.emoji} ${rc.label}</span>
+                      </div>
+                      ${p.secretWord ? `<p class="text-xs mt-0.5" style="color: var(--text-muted);">Mot : "${p.secretWord}"</p>` : ''}
+                    </div>
+                    <span class="text-xl font-display font-bold flex-shrink-0" style="color: ${isWin ? 'var(--amber-glow)' : 'var(--cyan-glow)'};">
+                      ${sc} <span class="text-xs font-mono" style="color:var(--text-muted);">pts</span>
+                    </span>
+                  </div>
+                  <div style="background: rgba(22,41,82,0.6); border-radius:3px; height:3px; overflow:hidden;">
+                    <div style="height:100%; width:${pct}%; background:${isWin ? '#f59e0b' : 'var(--cyan-glow)'}; border-radius:3px;"></div>
+                  </div>
+                </div>
+              `
+            }).join('')}
+          </div>
+        </div>
+
+        <!-- Actions -->
         <div class="mt-auto flex flex-col gap-3">
           ${isHost ? `
             <button id="btn-new-game" class="btn-primary w-full">
               🔄 Nouvelle partie
             </button>
           ` : ''}
-          <button id="btn-home" class="btn-ghost w-full text-sm">
-            ← Retour à l'accueil
-          </button>
+          <button id="btn-home" class="btn-ghost w-full text-sm">← Retour à l'accueil</button>
         </div>
       </div>
     `
 
-    document.getElementById('btn-home')?.addEventListener('click', () => {
-      cleanup()
-      onGameEnd()
-    })
+    document.getElementById('btn-home')?.addEventListener('click', () => { cleanup(); onGameEnd() })
 
     document.getElementById('btn-new-game')?.addEventListener('click', async () => {
-      // Reset room to waiting state
       const { db: database } = await import('../firebase.js')
       const { ref: dbRef, update: dbUpdate } = await import('firebase/database')
-
       const resetPlayers = {}
       players.forEach(p => {
-        resetPlayers[p.id] = {
-          ...p,
-          role: null,
-          secretWord: null,
-          isEliminated: false,
-          hasRevealedWord: false,
-        }
+        resetPlayers[p.id] = { ...p, role: null, secretWord: null, isEliminated: false, hasRevealedWord: false }
       })
-
+      const resetScores = {}
+      players.forEach(p => { resetScores[p.id] = 0 })
       await dbUpdate(dbRef(database, `rooms/${roomCode}`), {
-        state: 'waiting',
-        currentRound: 0,
-        wordPair: null,
-        currentTwist: null,
-        eliminatedThisRound: null,
-        gameResult: null,
-        votes: {},
+        state: 'waiting', currentRound: 0,
+        wordPair: null, currentTwist: null, eliminatedThisRound: null,
+        gameResult: null, votes: {}, wordHistory: {},
+        scores: resetScores, deltaScores: null,
+        isTiebreak: false, isBonusRound: false, tiedPlayers: null,
         players: resetPlayers,
       })
     })

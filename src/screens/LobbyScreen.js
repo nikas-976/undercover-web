@@ -14,6 +14,7 @@ const MAX_PLAYERS = 10
 export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGameStart, onLeave }) {
   let unsubscribe = null
   let selectedThemes = [] // [] = tout mélangé
+  let settings = { maxScore: 20, undercoversCount: 1, useMrWhite: false, useNotes: false }
 
   container.innerHTML = `
     <div class="screen flex flex-col min-h-screen px-5 py-6">
@@ -51,6 +52,51 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
       <div class="card-glass p-4 mb-4">
         <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--text-muted);">Rôles actifs</p>
         <div id="roles-preview" class="flex flex-wrap gap-2"></div>
+      </div>
+
+      <!-- HOST SETTINGS (host only) -->
+      <div id="host-settings" class="hidden mb-5">
+        <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--amber-glow);">
+          ⚙️ Paramètres de la partie
+        </p>
+        <div class="card p-4 flex flex-col gap-4">
+          <!-- Score max -->
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-sm font-body text-white">Score à atteindre</p>
+              <p class="text-xs" style="color: var(--text-muted);">Première manche gagnante</p>
+            </div>
+            <select id="setting-maxscore" class="font-mono text-sm px-3 py-1.5 rounded-lg" style="background: rgba(10,20,40,0.8); border: 1px solid rgba(0,245,212,0.3); color: var(--cyan-glow);">
+              <option value="10">10 pts</option>
+              <option value="20" selected>20 pts</option>
+              <option value="30">30 pts</option>
+              <option value="50">50 pts</option>
+              <option value="70">70 pts</option>
+              <option value="100">100 pts</option>
+              <option value="150">150 pts</option>
+              <option value="200">200 pts</option>
+              <option value="70">70 pts</option>
+              <option value="100">100 pts</option>
+              <option value="150">150 pts</option>
+              <option value="200">200 pts</option>
+            </select>
+          </div>
+          <!-- Notes -->
+          <label class="flex items-center justify-between cursor-pointer">
+            <div>
+              <p class="text-sm font-body text-white">📝 Carnet de notes</p>
+              <p class="text-xs" style="color: var(--text-muted);">Affiche les mots déjà dits</p>
+            </div>
+            <div class="relative">
+              <input type="checkbox" id="setting-notes" class="sr-only">
+              <div id="toggle-notes" class="toggle-track w-11 h-6 rounded-full transition-colors" style="background: rgba(22,41,82,0.8); border: 1px solid rgba(22,41,82,0.9);"></div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Settings display (non-host) -->
+      <div id="settings-display" class="hidden card-glass p-4 mb-4 flex gap-3 flex-wrap">
       </div>
 
       <!-- THEME SELECTOR (host only) -->
@@ -108,6 +154,10 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
     if (room.selectedThemes !== undefined) {
       selectedThemes = Array.isArray(room.selectedThemes) ? room.selectedThemes : []
     }
+    // Sync settings
+    if (room.settings) {
+      settings = { ...settings, ...room.settings }
+    }
 
     // Player count
     document.getElementById('player-count').textContent = `${count} / ${MAX_PLAYERS}`
@@ -139,7 +189,19 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
     const themeDisplay  = document.getElementById('theme-display')
     const themeDValue   = document.getElementById('theme-display-value')
 
+    const settingsPanel  = document.getElementById('host-settings')
+    const settingsDisplay = document.getElementById('settings-display')
+
     if (isHost) {
+      if (settingsPanel) settingsPanel.classList.remove('hidden')
+      if (settingsDisplay) settingsDisplay.classList.add('hidden')
+      // Sync select value
+      const sel = document.getElementById('setting-maxscore')
+      if (sel) sel.value = String(settings.maxScore || 20)
+      const notesChk = document.getElementById('setting-notes')
+      if (notesChk) notesChk.checked = !!settings.useNotes
+      updateToggleUI()
+      attachSettingsListeners()
       themeSelector.classList.remove('hidden')
       themeDisplay.classList.add('hidden')
       // Re-render buttons to reflect current selection
@@ -148,6 +210,14 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
     } else {
       themeSelector.classList.add('hidden')
       themeDisplay.classList.remove('hidden')
+      if (settingsPanel) settingsPanel.classList.add('hidden')
+      if (settingsDisplay) {
+        settingsDisplay.classList.remove('hidden')
+        settingsDisplay.innerHTML = `
+          <span class="text-xs font-mono px-2 py-1 rounded" style="background: rgba(0,245,212,0.08); border: 1px solid rgba(0,245,212,0.2); color: var(--cyan-glow);">🏆 ${settings.maxScore || 20} pts</span>
+          ${settings.useNotes ? '<span class="text-xs font-mono px-2 py-1 rounded" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); color: var(--amber-glow);">📝 Notes ON</span>' : ''}
+        `
+      }
       const st = Array.isArray(room.selectedThemes) ? room.selectedThemes : []
       if (st.length === 0) {
         themeDValue.textContent = '🎲 Tout mélangé'
@@ -236,7 +306,7 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
       const activePlayers = playerIds.map(id => ({ id, pseudo: room.players[id].pseudo }))
       const twist         = generateTwist(activePlayers)
 
-      await startGame(roomCode, wordPair, assignedRoles, twist, JSON.stringify(selectedThemes))
+      await startGame(roomCode, wordPair, assignedRoles, twist, selectedThemes, settings)
     } catch (err) {
       console.error('Erreur démarrage:', err)
       showToast('Erreur lors du lancement.', 'error')
@@ -286,12 +356,41 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
     })
   }
 
+  function updateToggleUI() {
+    const notesChk = document.getElementById('setting-notes')
+    const toggleNotes = document.getElementById('toggle-notes')
+    if (toggleNotes) {
+      toggleNotes.style.background = notesChk?.checked ? 'rgba(0,245,212,0.6)' : 'rgba(22,41,82,0.8)'
+      toggleNotes.style.borderColor = notesChk?.checked ? 'rgba(0,245,212,0.8)' : 'rgba(22,41,82,0.9)'
+    }
+  }
+
+  function attachSettingsListeners() {
+    document.getElementById('setting-maxscore')?.addEventListener('change', async (e) => {
+      settings.maxScore = parseInt(e.target.value)
+      await syncSettings()
+    })
+    document.getElementById('toggle-notes')?.addEventListener('click', async () => {
+      const chk = document.getElementById('setting-notes')
+      if (chk) { chk.checked = !chk.checked; settings.useNotes = chk.checked }
+      updateToggleUI()
+      await syncSettings()
+    })
+  }
+
+  async function syncSettings() {
+    try {
+      const { db: database } = await import('../firebase.js')
+      const { ref: dbRef, set: dbSet } = await import('firebase/database')
+      await dbSet(dbRef(database, `rooms/${roomCode}/settings`), settings)
+    } catch(e) { console.error('settings sync error', e) }
+  }
+
   function cleanup() {
     if (unsubscribe) { unsubscribe(); unsubscribe = null }
   }
 }
 
-// ---- Rendu des boutons de thème ----
 function renderThemeButtons(selectedThemes) {
   const sel = Array.isArray(selectedThemes) ? selectedThemes : []
   const allThemes = [THEMES.ALL, ...Object.values(THEMES).filter(t => t.id !== 'all')]
