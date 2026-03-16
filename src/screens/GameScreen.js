@@ -194,7 +194,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
 
         ${renderHeader((isBonusRound ? '⚡ Tour BONUS' : 'Tour ' + room.currentRound) + ' — Indices' + (isDoublePasse ? ' · Passe ' + currentPass + '/2' : ''), room.currentRound, room)}
         ${room.currentTwist ? renderTwistBanner(room.currentTwist) : ''}
-        ${renderWordCardRevealed(me)}
+        ${renderFlippableWordCard(me)}
 
         <!-- C'est mon tour : texte ou oral selon settings -->
         ${needsOrderGen ? '' : isMyTurn ? `
@@ -317,6 +317,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       </div>
     `
 
+    // ── Flip card toggle ──
+    attachFlipCardHandler()
+
     // ── Mode TEXTE : saisie de mot ──
     if (useTextInput && isMyTurn && !needsOrderGen) {
       const input = document.getElementById('word-input')
@@ -400,7 +403,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         ${renderHeader('Tour ' + room.currentRound + ' — Vote', room.currentRound, room)}
 
         <!-- Rappel -->
-        ${renderWordCardRevealed(me)}
+        ${renderFlippableWordCard(me)}
 
         <!-- Instruction vote -->
         <div class="twist-banner p-4">
@@ -477,6 +480,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       </div>
     `
 
+    // ── Flip card toggle ──
+    attachFlipCardHandler()
+
     // Voter (et changer de vote si tout le monde n'a pas encore voté)
     document.querySelectorAll('.vote-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -543,7 +549,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         </div>
 
         <!-- Rappel mot -->
-        ${renderWordCardRevealed(me)}
+        ${renderFlippableWordCard(me)}
 
         <!-- Boutons re-vote (seulement les joueurs à égalité) -->
         <div class="flex flex-col gap-2">
@@ -602,6 +608,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         `}
       </div>
     `
+
+    // ── Flip card toggle ──
+    attachFlipCardHandler()
 
     // Voter
     document.querySelectorAll('.vote-btn').forEach(btn => {
@@ -1115,6 +1124,68 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         <p class="text-sm" style="color: rgba(226,232,240,0.85);">
           ${formatTwistDescription(twist.description)}
         </p>
+      </div>
+    `
+  }
+
+  function attachFlipCardHandler() {
+    const card = document.getElementById('flippable-word-card')
+    if (!card) return
+    card.addEventListener('click', () => {
+      const isFlipped = card.dataset.flipped === 'true'
+      const hiddenFace   = document.getElementById('flippable-word-card-hidden')
+      const revealedFace = document.getElementById('flippable-word-card-revealed')
+      if (isFlipped) {
+        hiddenFace?.classList.remove('hidden')
+        revealedFace?.classList.add('hidden')
+        card.style.borderColor = 'rgba(0,245,212,0.2)'
+        card.dataset.flipped = 'false'
+      } else {
+        hiddenFace?.classList.add('hidden')
+        revealedFace?.classList.remove('hidden')
+        card.style.borderColor = 'rgba(0,245,212,0.5)'
+        card.dataset.flipped = 'true'
+      }
+    })
+  }
+
+  // ─────────────────────────────────────────────
+  // Carte retournable : cachée par défaut, tap = voir le mot
+  // ─────────────────────────────────────────────
+  function renderFlippableWordCard(player) {
+    const roleConf = getRoleConfig(player.role)
+    const cardId = 'flippable-word-card'
+    return `
+      <div id="${cardId}" class="word-card p-6 text-center w-full mx-auto max-w-xs cursor-pointer select-none"
+        style="border-color: rgba(0,245,212,0.2); background: rgba(2,8,23,0.8); transition: all 0.2s;"
+        data-flipped="false">
+        <!-- Face cachée (défaut) -->
+        <div id="${cardId}-hidden" class="flex flex-col items-center gap-3">
+          <div class="w-12 h-12 rounded-full flex items-center justify-center"
+            style="background: rgba(0,245,212,0.08); border: 1px solid rgba(0,245,212,0.2);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#00f5d4" stroke-width="1.5">
+              <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/>
+              <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/>
+              <line x1="1" y1="1" x2="23" y2="23" stroke="#ef4444"/>
+            </svg>
+          </div>
+          <div>
+            <p class="text-sm font-display font-bold" style="color: var(--cyan-glow);">Mot caché 👁️</p>
+            <p class="text-xs font-mono mt-1" style="color: var(--text-muted);">Appuie pour voir</p>
+          </div>
+        </div>
+        <!-- Face visible (après tap) -->
+        <div id="${cardId}-revealed" class="hidden flex flex-col items-center gap-2">
+          <p class="text-xs font-mono uppercase tracking-widest" style="color: var(--text-muted);">Ton mot secret</p>
+          ${player.secretWord
+            ? `<p class="text-3xl font-display font-bold" style="color: var(--cyan-glow);">${player.secretWord}</p>`
+            : `<p class="text-xl font-display font-bold" style="color: rgba(168,85,247,0.9);">??? Bluff !</p>`
+          }
+          <span class="role-badge ${roleConf.colorClass}" style="font-size:0.65rem; margin-top:4px;">
+            ${roleConf.emoji} ${roleConf.label}
+          </span>
+          <p class="text-xs font-mono mt-1" style="color: var(--text-muted);">Appuie pour cacher</p>
+        </div>
       </div>
     `
   }
