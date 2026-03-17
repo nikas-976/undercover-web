@@ -238,9 +238,12 @@ export async function processVotes(code) {
       const deltaScores = {}
       allPlayers.forEach(p => { deltaScores[p.id] = 0 })
 
-      // Undercovers vivants uniquement
+      // Undercovers vivants : +5 (bonus tie = undercover win)
       allPlayers.filter(p => !p.isEliminated && p.role === 'undercover')
         .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 5; deltaScores[p.id] = 5 })
+      // Touriste vivant : +3
+      allPlayers.filter(p => !p.isEliminated && p.role === 'tourist')
+        .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 3; deltaScores[p.id] = (deltaScores[p.id]||0) + 3 })
 
       const maxReached = Object.values(newScores).some(s => Number(s) >= maxScore)
 
@@ -277,14 +280,75 @@ export async function processVotes(code) {
     return { eliminated: null, tie: true, bonusRound: true }
   }
 
-  const eliminatedId = sortedPlayers[0]
+  const eliminatedId     = sortedPlayers[0]
+  const allPlayers       = Object.values(room.players || {})
+  const eliminatedPlayer = allPlayers.find(p => p.id === eliminatedId)
+  const eliminatedRole   = eliminatedPlayer?.role
 
-  await update(ref(db, `rooms/${code}`), {
+  const baseUpdate = {
     [`players/${eliminatedId}/isEliminated`]: true,
-    state: 'results',
     eliminatedThisRound: eliminatedId,
-  })
+    votes: {},
+  }
 
+  // ── CAS A : Agent Double éliminé → victoire immédiate ──
+  if (eliminatedRole === 'double_agent') {
+    await update(ref(db, `rooms/${code}`), {
+      ...baseUpdate,
+      state: 'results',
+      roundWinner: 'agent_double',
+    })
+    return { eliminated: eliminatedId, tie: false, agentDoubleWin: true }
+  }
+
+  // ── CAS B : Touriste éliminé → modale "devine le mot" ──
+  if (eliminatedRole === 'tourist') {
+    await update(ref(db, `rooms/${code}`), {
+      ...baseUpdate,
+      state: 'tourist_guess',
+      touristGuessPlayerId: eliminatedId,
+      touristGuessResult:   null,
+    })
+    return { eliminated: eliminatedId, tie: false, touristGuess: true }
+  }
+
+  // ── CAS C : Undercover éliminé → victoire des civils ──
+  if (eliminatedRole === 'undercover') {
+    await update(ref(db, `rooms/${code}`), {
+      ...baseUpdate,
+      state: 'results',
+      roundWinner: 'civil',
+    })
+    return { eliminated: eliminatedId, tie: false, civilWin: true }
+  }
+
+  // ── Civil ou Indicator éliminé → vérifier CAS D ──
+  // Simuler l'état après élimination pour checkWinCondition
+  const updatedPlayers = {}
+  allPlayers.forEach(p => {
+    updatedPlayers[p.id] = p.id === eliminatedId ? { ...p, isEliminated: true } : p
+  })
+  const alive     = Object.values(updatedPlayers).filter(p => !p.isEliminated)
+  const aliveUC   = alive.filter(p => p.role === 'undercover').length
+  const aliveCiv  = alive.filter(p => ['civil','indicator'].includes(p.role)).length
+  const aliveTour = alive.filter(p => p.role === 'tourist').length
+
+  // CAS D : Undercover a la majorité → victoire undercover
+  if (aliveUC > 0 && aliveCiv <= aliveUC + aliveTour) {
+    await update(ref(db, `rooms/${code}`), {
+      ...baseUpdate,
+      state: 'results',
+      roundWinner: 'undercover',
+    })
+    return { eliminated: eliminatedId, tie: false, undercoverWin: true }
+  }
+
+  // Jeu continue — tour suivant
+  await update(ref(db, `rooms/${code}`), {
+    ...baseUpdate,
+    state: 'results',
+    roundWinner: null,
+  })
   return { eliminated: eliminatedId, tie: false }
 }
 
@@ -410,6 +474,39 @@ export async function submitWord(code, uid, word) {
 }
 
 // =============================================
+// V2 — DEVINETTE DU TOURISTE
+// =============================================
+
+export async function submitTouristGuess(code, guess) {
+  const snap = await get(ref(db, `rooms/${code}`))
+  const room = snap.val()
+  const civilWord = room?.wordPair?.civil || ''
+
+  const correct = guess.trim().toLowerCase() === civilWord.trim().toLowerCase()
+
+  if (correct) {
+    // Touriste a trouvé → victoire Touriste
+    await update(ref(db, `rooms/${code}`), {
+      touristGuessResult: 'correct',
+      state:              'results',
+      roundWinner:        'tourist',
+    })
+  } else {
+    // Raté → le jeu continue au tour suivant (on revient à playing)
+    const currentRound = room.currentRound || 1
+    await update(ref(db, `rooms/${code}`), {
+      touristGuessResult:  'wrong',
+      state:               'playing',
+      currentRound:        currentRound,
+      speakingOrder:       [],
+      currentSpeakerIndex: 0,
+      wordHistory:         {},
+    })
+  }
+  return { correct }
+}
+
+// =============================================
 // V2 — FIN DE MANCHE + CALCUL DES SCORES
 // =============================================
 
@@ -425,19 +522,47 @@ export async function endRound(code, winResult) {
   const deltaScores = {}
   players.forEach(p => { deltaScores[p.id] = 0 })
 
-  const side = winResult?.winners?.includes('undercover') ? 'undercover' : 'civil'
+  // roundWinner from Firebase (set by processVotes) takes priority
+  const roundWinner = room.roundWinner || (winResult?.winners?.includes('undercover') ? 'undercover' : 'civil')
 
-  if (side === 'civil') {
-    players.filter(p => !p.isEliminated && ['civil', 'indicator'].includes(p.role))
-      .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 2; deltaScores[p.id] = 2 })
-  } else {
-    // Undercovers vivants uniquement (pas de points si éliminé)
-    players.filter(p => !p.isEliminated && p.role === 'undercover')
-      .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 5; deltaScores[p.id] = 5 })
+  const add = (p, pts) => {
+    newScores[p.id] = (newScores[p.id] || 0) + pts
+    deltaScores[p.id] = (deltaScores[p.id] || 0) + pts
   }
-  // Tourist survives to end: +3
-  players.filter(p => !p.isEliminated && p.role === 'tourist')
-    .forEach(p => { newScores[p.id] = (newScores[p.id] || 0) + 3; deltaScores[p.id] += 3 })
+
+  if (roundWinner === 'civil') {
+    // ── Victoire Civils (CAS C) ──
+    // Civil vivant : +2 | Civil éliminé : +1
+    players.filter(p => ['civil'].includes(p.role))
+      .forEach(p => add(p, p.isEliminated ? 1 : 2))
+    // La Balance vivante : +3 (0 si éliminée)
+    players.filter(p => p.role === 'indicator' && !p.isEliminated)
+      .forEach(p => add(p, 3))
+    // Agent Double qui a survécu (rare mais possible) : +8
+    players.filter(p => p.role === 'double_agent' && !p.isEliminated)
+      .forEach(p => add(p, 8))
+
+  } else if (roundWinner === 'undercover') {
+    // ── Victoire Undercover (CAS D) ──
+    // Undercover vivant : +5
+    players.filter(p => p.role === 'undercover' && !p.isEliminated)
+      .forEach(p => add(p, 5))
+    // Touriste encore vivant : +3
+    players.filter(p => p.role === 'tourist' && !p.isEliminated)
+      .forEach(p => add(p, 3))
+
+  } else if (roundWinner === 'agent_double') {
+    // ── Victoire Agent Double (CAS A) ──
+    // Uniquement l'agent double éliminé : +5
+    players.filter(p => p.role === 'double_agent' && p.isEliminated)
+      .forEach(p => add(p, 5))
+
+  } else if (roundWinner === 'tourist') {
+    // ── Victoire Touriste (CAS B — a deviné le mot) ──
+    // Uniquement le touriste : +6
+    players.filter(p => p.role === 'tourist')
+      .forEach(p => add(p, 6))
+  }
 
   const maxReached = Object.values(newScores).some(s => s >= maxScore)
 
@@ -475,6 +600,10 @@ export async function startNextRound(code, wordPair, assignedRoles, twist, selec
   updates[`rooms/${code}/deltaScores`]         = null
   updates[`rooms/${code}/winningSide`]         = null
   updates[`rooms/${code}/maxScoreReached`]     = false
+  updates[`rooms/${code}/roundWinner`]         = null
+  updates[`rooms/${code}/touristGuessPlayerId`] = null
+  updates[`rooms/${code}/touristGuessResult`]  = null
+  updates[`rooms/${code}/bonusTieWin`]         = false
 
   for (const { uid, role, secretWord } of assignedRoles) {
     updates[`rooms/${code}/players/${uid}/role`]          = role

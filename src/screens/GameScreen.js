@@ -6,7 +6,7 @@
 import {
   subscribeToRoom, markWordRevealed, startPlayingPhase,
   castVote, processVotes, nextRound, endGame, deleteRoom,
-  submitWord, endRound, startNextRound,
+  submitWord, endRound, startNextRound, submitTouristGuess,
 } from '../game/roomManager.js'
 import { getRoleConfig, checkWinCondition, assignRoles, ROLES } from '../game/roles.js'
 import { generateTwist } from '../game/twists.js'
@@ -37,7 +37,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       case 'revealing': renderRevealPhase(room, me); break
       case 'playing':   renderPlayingPhase(room, me); break
       case 'voting':    renderVotingPhase(room, me); break
-      case 'tiebreak':  renderTiebreakPhase(room, me); break  // legacy fallback
+      case 'tiebreak':       renderTiebreakPhase(room, me); break  // legacy fallback
+      case 'tourist_guess':  renderTouristGuessPhase(room, me); break
       case 'round_end':  renderRoundEndPhase(room, me); break
       case 'results':   renderResultsPhase(room, me); break
       case 'ended':     renderEndedPhase(room, me); break
@@ -646,6 +647,128 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
   }
 
   // =============================================
+  // PHASE 3c : DEVINETTE DU TOURISTE
+  // =============================================
+
+  function renderTouristGuessPhase(room, me) {
+    const touristId = room.touristGuessPlayerId
+    const isTourist = me.id === touristId
+    const tourist   = room.players?.[touristId]
+    const isHost    = room.creatorId === playerId
+    const settings  = room.settings || {}
+    const useText   = settings.useTextInput !== false
+
+    document.getElementById('game-container').innerHTML = `
+      <div class="flex flex-col min-h-screen gap-5">
+        ${renderHeader('Chance du Touriste', room.currentRound, room)}
+
+        <!-- Bannière -->
+        <div class="card p-5 text-center" style="border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.05);">
+          <p class="text-3xl mb-2">🗺️</p>
+          <p class="font-display font-bold text-xl" style="color: var(--amber-glow);">
+            ${tourist ? tourist.pseudo : 'Le Touriste'} a été éliminé !
+          </p>
+          <p class="text-sm mt-2" style="color: rgba(226,232,240,0.7);">
+            ${isTourist
+              ? "C'est ta dernière chance ! Tu peux deviner le mot civil pour remporter la manche."
+              : "Le Touriste a une dernière chance de deviner le mot civil pour gagner !"}
+          </p>
+        </div>
+
+        ${isTourist ? `
+          <!-- Zone de devinette — Touriste uniquement -->
+          <div class="card p-5" style="border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.04);">
+            <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--amber-glow);">
+              🔍 Quel est le mot des Civils ?
+            </p>
+            ${useText ? `
+              <div class="flex gap-2">
+                <input id="tourist-guess-input" type="text" maxlength="30"
+                  placeholder="Tape le mot civil..."
+                  class="flex-1 px-4 py-3 rounded-lg text-sm font-body"
+                  style="background: rgba(2,8,23,0.8); border: 1px solid rgba(245,158,11,0.4); color: #f8fafc; outline: none;"
+                  autocomplete="off" autocorrect="off" />
+                <button id="btn-tourist-guess" class="btn-warning px-5 py-3 text-sm">
+                  Valider ↵
+                </button>
+              </div>
+              <p class="text-xs mt-2 text-center" style="color: var(--text-muted);">
+                Une seule tentative — bonne chance !
+              </p>
+            ` : `
+              <p class="text-sm mb-3" style="color: rgba(226,232,240,0.7);">
+                Dis ton mot à voix haute. L'hôte validera ta réponse.
+              </p>
+              <div class="flex gap-2">
+                <button id="btn-tourist-correct" class="btn-primary flex-1">✅ Correct !</button>
+                <button id="btn-tourist-wrong" class="btn-danger flex-1">❌ Faux</button>
+              </div>
+            `}
+          </div>
+        ` : isHost && !useText ? `
+          <!-- Hôte valide en mode oral -->
+          <div class="card p-5 text-center" style="border-color: rgba(245,158,11,0.3);">
+            <p class="text-sm mb-4" style="color: rgba(226,232,240,0.8);">
+              Écoute la réponse de <strong>${tourist ? tourist.pseudo : 'Le Touriste'}</strong> et valide :
+            </p>
+            <div class="flex gap-3">
+              <button id="btn-tourist-correct" class="btn-primary flex-1">✅ Correct !</button>
+              <button id="btn-tourist-wrong" class="btn-danger flex-1">❌ Faux</button>
+            </div>
+          </div>
+        ` : `
+          <!-- Autres joueurs en attente -->
+          <div class="card p-4 text-center">
+            <p class="text-sm" style="color: var(--text-muted);">
+              ${useText
+                ? `En attente que ${tourist ? tourist.pseudo : 'le Touriste'} tape sa réponse…`
+                : `${tourist ? tourist.pseudo : 'Le Touriste'} donne sa réponse à voix haute…`}
+            </p>
+            <div class="flex justify-center mt-3"><div class="spinner"></div></div>
+          </div>
+        `}
+
+        <!-- Le mot est visible seulement pour ceux qui le connaissent -->
+        ${!isTourist ? renderFlippableWordCard(me) : ''}
+      </div>
+    `
+
+    // Mode texte — le touriste soumet sa réponse
+    if (isTourist && useText) {
+      const input = document.getElementById('tourist-guess-input')
+      const btn   = document.getElementById('btn-tourist-guess')
+
+      async function doGuess() {
+        const guess = input?.value?.trim()
+        if (!guess) { showToast('Écris un mot !', 'info'); return }
+        if (btn) btn.disabled = true
+        if (input) input.disabled = true
+        const result = await submitTouristGuess(roomCode, guess)
+        if (!result.correct) {
+          showToast('Raté ! Le jeu continue…', 'error')
+        }
+      }
+
+      btn?.addEventListener('click', doGuess)
+      input?.addEventListener('keydown', e => { if (e.key === 'Enter') doGuess() })
+      setTimeout(() => input?.focus(), 100)
+    }
+
+    // Mode oral — l'hôte valide (ou mode texte inaccessible pour hôte)
+    if (isHost || (!useText && isHost)) {
+      document.getElementById('btn-tourist-correct')?.addEventListener('click', async () => {
+        await submitTouristGuess(roomCode, room.wordPair?.civil || '')
+      })
+      document.getElementById('btn-tourist-wrong')?.addEventListener('click', async () => {
+        await submitTouristGuess(roomCode, '__wrong__')
+      })
+    }
+
+    // Flip card pour les non-touristes
+    if (!isTourist) attachFlipCardHandler()
+  }
+
+  // =============================================
   // PHASE 4 : RÉSULTATS D'ÉLIMINATION
   // =============================================
 
@@ -661,15 +784,21 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
     const maxRounds     = totalPlayers <= 3 ? 1 : totalPlayers === 4 ? 2 : 3
     const roundLimitHit = room.currentRound >= maxRounds
 
-    // Check win condition — si limite atteinte et partie pas finie, l'Undercover gagne
-    let winResult = checkWinCondition(room.players || {})
-    if (!winResult.gameOver && roundLimitHit) {
-      winResult = {
-        gameOver: true,
-        winners: [ROLES.UNDERCOVER],
-        reason: "Limite de tours atteinte ! L'Undercover n'a pas été démasqué. Il gagne !",
-        roundLimit: true,
-      }
+    // roundWinner is set by processVotes — use it to determine win condition
+    let winResult
+    const roundWinner = room.roundWinner
+    if (roundWinner === 'civil') {
+      winResult = { gameOver: true, winners: [ROLES.CIVIL, ROLES.INDICATOR], reason: "L'Undercover a été démasqué ! Les Civils gagnent !" }
+    } else if (roundWinner === 'undercover') {
+      winResult = { gameOver: true, winners: [ROLES.UNDERCOVER], reason: "L'Undercover prend le contrôle !" }
+    } else if (roundWinner === 'agent_double') {
+      winResult = { gameOver: true, winners: [ROLES.DOUBLE_AGENT], reason: "L'Agent Double s'est fait éliminer en premier ! Il gagne !" }
+    } else if (roundWinner === 'tourist') {
+      winResult = { gameOver: true, winners: [ROLES.TOURIST], reason: "Le Touriste a deviné le mot ! Il gagne !" }
+    } else if (roundLimitHit) {
+      winResult = { gameOver: true, winners: [ROLES.UNDERCOVER], reason: "Limite de tours atteinte ! L'Undercover n'a pas été démasqué.", roundLimit: true }
+    } else {
+      winResult = checkWinCondition(room.players || {})
     }
 
     document.getElementById('game-container').innerHTML = `
