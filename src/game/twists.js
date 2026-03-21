@@ -24,6 +24,7 @@ const TWIST_TEMPLATES = [
     label: '🤫 Chuchotement',
     description: '{player1} doit donner son indice en chuchotant à l\'oreille de son voisin. Les autres ne l\'entendent pas !',
     needsOnePlayer: true,
+    isPhysicalAction: true,
   },
   {
     id: 'double_or_nothing',
@@ -45,6 +46,7 @@ const TWIST_TEMPLATES = [
     label: '🤸 Mime',
     description: '{player1} doit mimer son indice au lieu de le dire. Les autres ne peuvent pas deviner à voix haute.',
     needsOnePlayer: true,
+    isPhysicalAction: true,
   },
   {
     id: 'no_repetition',
@@ -101,7 +103,7 @@ export function generateTwist(activePlayers) {
     twist.targetPlayer = p1.id
 
   }
-  // Clean up template flags
+  // Clean up template flags (keep isPhysicalAction for GameScreen)
   delete twist.needsTwoPlayers
   delete twist.needsOnePlayer
 

@@ -312,8 +312,42 @@ export async function processVotes(code) {
     return { eliminated: eliminatedId, tie: false, touristGuess: true }
   }
 
-  // ── CAS C : Undercover éliminé → victoire des civils ──
-  if (eliminatedRole === 'undercover') {
+  // ── Calculer l'état après élimination ──
+  const updatedPlayers = {}
+  allPlayers.forEach(p => {
+    updatedPlayers[p.id] = p.id === eliminatedId ? { ...p, isEliminated: true } : p
+  })
+  const alive     = Object.values(updatedPlayers).filter(p => !p.isEliminated)
+  const aliveUC   = alive.filter(p => p.role === 'undercover').length
+  const aliveDA   = alive.filter(p => p.role === 'double_agent').length
+  const aliveCiv  = alive.filter(p => ['civil','indicator'].includes(p.role)).length
+  const aliveTour = alive.filter(p => p.role === 'tourist').length
+
+  // ── CAS C : Dernier Undercover éliminé ──
+  if (eliminatedRole === 'undercover' && aliveUC === 0) {
+    // Si Agent Double encore vivant → il gagne (CAS A prioritaire sur civils)
+    if (aliveDA > 0) {
+      await update(ref(db, `rooms/${code}`), {
+        ...baseUpdate,
+        state: 'results',
+        roundWinner: 'agent_double',
+      })
+      return { eliminated: eliminatedId, tie: false, agentDoubleWin: true }
+    }
+    // Si Touriste encore vivant → il a sa chance de deviner
+    if (aliveTour > 0) {
+      // On cherche l'id du touriste vivant
+      const livingTourist = alive.find(p => p.role === 'tourist')
+      await update(ref(db, `rooms/${code}`), {
+        ...baseUpdate,
+        state: 'tourist_guess',
+        touristGuessPlayerId: livingTourist.id,
+        touristGuessResult: null,
+        roundWinner: null,
+      })
+      return { eliminated: eliminatedId, tie: false, touristGuess: true }
+    }
+    // Sinon → victoire des civils
     await update(ref(db, `rooms/${code}`), {
       ...baseUpdate,
       state: 'results',
@@ -322,18 +356,17 @@ export async function processVotes(code) {
     return { eliminated: eliminatedId, tie: false, civilWin: true }
   }
 
-  // ── Civil ou Indicator éliminé → vérifier CAS D ──
-  // Simuler l'état après élimination pour checkWinCondition
-  const updatedPlayers = {}
-  allPlayers.forEach(p => {
-    updatedPlayers[p.id] = p.id === eliminatedId ? { ...p, isEliminated: true } : p
-  })
-  const alive     = Object.values(updatedPlayers).filter(p => !p.isEliminated)
-  const aliveUC   = alive.filter(p => p.role === 'undercover').length
-  const aliveCiv  = alive.filter(p => ['civil','indicator'].includes(p.role)).length
-  const aliveTour = alive.filter(p => p.role === 'tourist').length
+  // ── UC éliminé mais pas le dernier → jeu continue ──
+  if (eliminatedRole === 'undercover' && aliveUC > 0) {
+    await update(ref(db, `rooms/${code}`), {
+      ...baseUpdate,
+      state: 'results',
+      roundWinner: null,
+    })
+    return { eliminated: eliminatedId, tie: false }
+  }
 
-  // CAS D : Undercover a la majorité → victoire undercover
+  // ── CAS D : Civil/Indicator éliminé → vérifier si UC a la majorité ──
   if (aliveUC > 0 && aliveCiv <= aliveUC + aliveTour) {
     await update(ref(db, `rooms/${code}`), {
       ...baseUpdate,
@@ -366,6 +399,9 @@ export async function nextRound(code, newTwist) {
     currentTwist: newTwist,
     votes: {},
     eliminatedThisRound: null,
+    speakingOrder: [],
+    currentSpeakerIndex: 0,
+    wordHistory: {},
   })
 }
 
@@ -492,13 +528,26 @@ export async function submitTouristGuess(code, guess) {
       roundWinner:        'tourist',
     })
   } else {
-    // Raté → le jeu continue au tour suivant (on revient à playing)
+    // Raté → incrémenter le tour et générer un nouvel ordre de passage
     const currentRound = room.currentRound || 1
+    const alivePlayers = Object.values(room.players || {}).filter(p => !p.isEliminated)
+    const ids = alivePlayers.map(p => p.id)
+    // Fisher-Yates shuffle
+    for (let i = ids.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [ids[i], ids[j]] = [ids[j], ids[i]]
+    }
+    const pass1 = [...ids]
+    const pass2 = [...ids]
+    for (let i = pass2.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pass2[i], pass2[j]] = [pass2[j], pass2[i]]
+    }
     await update(ref(db, `rooms/${code}`), {
       touristGuessResult:  'wrong',
       state:               'playing',
-      currentRound:        currentRound,
-      speakingOrder:       [],
+      currentRound:        currentRound + 1,
+      speakingOrder:       [...pass1, ...pass2],
       currentSpeakerIndex: 0,
       wordHistory:         {},
     })
@@ -513,6 +562,8 @@ export async function submitTouristGuess(code, guess) {
 export async function endRound(code, winResult) {
   const snap    = await get(ref(db, `rooms/${code}`))
   const room    = snap.val()
+  // Guard contre double-clic : si déjà en round_end, ne rien faire
+  if (room?.state === 'round_end') return
   const players = Object.values(room.players || {})
   const current = room.scores || {}
   const settings = room.settings || {}
@@ -530,36 +581,44 @@ export async function endRound(code, winResult) {
     deltaScores[p.id] = (deltaScores[p.id] || 0) + pts
   }
 
-  if (roundWinner === 'civil') {
-    // ── Victoire Civils (CAS C) ──
-    // Civil vivant : +2 | Civil éliminé : +1
-    players.filter(p => ['civil'].includes(p.role))
+  // Helper: scoring "côté civil" (civils + balance + éventuel DA survivant)
+  const scoreCivilSide = () => {
+    players.filter(p => p.role === 'civil')
       .forEach(p => add(p, p.isEliminated ? 1 : 2))
-    // La Balance vivante : +3 (0 si éliminée)
     players.filter(p => p.role === 'indicator' && !p.isEliminated)
       .forEach(p => add(p, 3))
-    // Agent Double qui a survécu (rare mais possible) : +8
     players.filter(p => p.role === 'double_agent' && !p.isEliminated)
       .forEach(p => add(p, 8))
+  }
+
+  if (roundWinner === 'civil') {
+    // ── Victoire Civils (CAS C, UC éliminé, pas de DA ni T vivants) ──
+    scoreCivilSide()
 
   } else if (roundWinner === 'undercover') {
     // ── Victoire Undercover (CAS D) ──
-    // Undercover vivant : +5
     players.filter(p => p.role === 'undercover' && !p.isEliminated)
       .forEach(p => add(p, 5))
-    // Touriste encore vivant : +3
     players.filter(p => p.role === 'tourist' && !p.isEliminated)
       .forEach(p => add(p, 3))
 
   } else if (roundWinner === 'agent_double') {
-    // ── Victoire Agent Double (CAS A) ──
-    // Uniquement l'agent double éliminé : +5
-    players.filter(p => p.role === 'double_agent' && p.isEliminated)
-      .forEach(p => add(p, 5))
+    // ── Victoire Agent Double ──
+    // Deux sous-cas :
+    // CAS A : DA éliminé en 1er → DA éliminé +5, personne d'autre
+    // CAS C variant : UC éliminé avec DA vivant → civils + DA +8 (même grille que civil win)
+    const daAlive = players.some(p => p.role === 'double_agent' && !p.isEliminated)
+    if (daAlive) {
+      // UC mort + DA vivant → civils ont aussi gagné leur manche, DA bonus +8
+      scoreCivilSide()
+    } else {
+      // DA s'est fait éliminer en 1er (son objectif) → uniquement lui : +5
+      players.filter(p => p.role === 'double_agent' && p.isEliminated)
+        .forEach(p => add(p, 5))
+    }
 
   } else if (roundWinner === 'tourist') {
-    // ── Victoire Touriste (CAS B — a deviné le mot) ──
-    // Uniquement le touriste : +6
+    // ── Victoire Touriste (CAS B) ──
     players.filter(p => p.role === 'tourist')
       .forEach(p => add(p, 6))
   }
@@ -570,7 +629,7 @@ export async function endRound(code, winResult) {
     state:        'round_end',
     scores:       newScores,
     deltaScores,
-    winningSide:  side,
+    winningSide:  roundWinner,
     maxScoreReached: maxReached,
   })
 }

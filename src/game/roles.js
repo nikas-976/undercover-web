@@ -56,9 +56,10 @@ export const ROLE_CONFIG = {
  */
 export function buildRolePool(playerCount, options = {}) {
   // Max undercovers: au moins 1, jamais plus que joueurs - 2 civils min - autres rôles spéciaux
-  const includeTourist    = !!(options.useMrWhite ?? options.includeTourist)
-  const includeIndicator  = !!options.includeIndicator
-  const includeDoubleAgent = !!options.includeDoubleAgent
+  // Désactivation forcée si pas assez de joueurs (sécurité absolue)
+  const includeTourist    = playerCount >= 4 && !!(options.useMrWhite ?? options.includeTourist)
+  const includeIndicator  = playerCount >= 6 && !!options.includeIndicator
+  const includeDoubleAgent = playerCount >= 7 && !!options.includeDoubleAgent
 
   const specialCount = (includeTourist ? 1 : 0) + (includeIndicator ? 1 : 0) + (includeDoubleAgent ? 1 : 0)
   // Règle hôte : floor((N-1)/2) → 3→1, 4→1, 5→2, 6→2, 7→3...
@@ -165,7 +166,7 @@ export function checkWinCondition(players) {
   if (civilCount <= threatCount) {
     return {
       gameOver: true,
-      winners: [ROLES.UNDERCOVER, ROLES.DOUBLE_AGENT],
+      winners: [ROLES.UNDERCOVER],
       reason: "L'Undercover prend le contrôle ! Les Civils ne sont plus en majorité.",
     }
   }

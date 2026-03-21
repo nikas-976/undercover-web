@@ -37,7 +37,6 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       case 'revealing': renderRevealPhase(room, me); break
       case 'playing':   renderPlayingPhase(room, me); break
       case 'voting':    renderVotingPhase(room, me); break
-      case 'tiebreak':       renderTiebreakPhase(room, me); break  // legacy fallback
       case 'tourist_guess':  renderTouristGuessPhase(room, me); break
       case 'round_end':  renderRoundEndPhase(room, me); break
       case 'results':   renderResultsPhase(room, me); break
@@ -201,7 +200,22 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
         ${needsOrderGen ? '' : isMyTurn ? `
           <div class="card p-5" style="border-color: rgba(0,245,212,0.5); background: rgba(0,245,212,0.05); box-shadow: 0 0 20px rgba(0,245,212,0.08);">
             <p class="text-xs font-mono uppercase tracking-widest mb-3" style="color: var(--cyan-glow);">🎤 À toi de jouer !</p>
-            ${useTextInput ? `
+            ${useTextInput ? (() => {
+              const twist = room.currentTwist
+              const isPhysical = twist?.isPhysicalAction && twist?.targetPlayer === playerId
+              if (isPhysical) {
+                const actionLabel = twist.id === 'mime' ? '(A mimé)' : twist.id === 'whisper' ? '(A chuchoté)' : '(Action réalisée)'
+                return `
+                  <p class="text-xs mb-3" style="color: rgba(226,232,240,0.6);">Réalise l'action demandée par le twist, puis valide.</p>
+                  <button id="btn-submit-word" class="btn-primary w-full py-3 text-sm" data-physical="${actionLabel}">
+                    ✅ Action réalisée
+                  </button>
+                  <p class="text-xs mt-2 text-center" style="color: var(--text-muted);">
+                    ${indexInPass + 1}/${halfLen} · ${isDoublePasse ? 'Passe ' + currentPass + '/2' : 'Tour ' + room.currentRound}
+                  </p>
+                `
+              }
+              return `
               <p class="text-xs mb-3" style="color: rgba(226,232,240,0.6);">Donne un mot en rapport avec ton mot secret, sans le dire directement.</p>
               <div class="flex gap-2">
                 <input id="word-input" type="text" maxlength="30"
@@ -216,7 +230,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
               <p class="text-xs mt-2 text-center" style="color: var(--text-muted);">
                 ${indexInPass + 1}/${halfLen} · ${isDoublePasse ? 'Passe ' + currentPass + '/2' : 'Tour ' + room.currentRound}
               </p>
-            ` : `
+            `})() : `
               <p class="text-sm" style="color: rgba(226,232,240,0.8);">Donne ton indice à voix haute, puis l'hôte passera au joueur suivant.</p>
               <p class="text-xs mt-2 text-center font-mono" style="color: var(--text-muted);">
                 ${indexInPass + 1}/${halfLen} · Mode oral 🎤
@@ -281,7 +295,14 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
                   </span>
                   ${useNotes && words.length > 0 ? `
                     <div class="flex flex-wrap gap-1 mt-1">
-                      ${words.map((w, wi) => `<span class="text-xs px-1.5 py-0.5 rounded font-mono" style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); color:var(--amber-glow);">${wi+1}. ${w}</span>`).join('')}
+                      ${(() => {
+                        // En passe 1 : afficher seulement le 1er mot
+                        // En passe 2 : afficher les 2 mots
+                        const visibleWords = isDoublePasse && currentPass === 1
+                          ? words.slice(0, 1)
+                          : words
+                        return visibleWords.map((w, wi) => `<span class="text-xs px-1.5 py-0.5 rounded font-mono" style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); color:var(--amber-glow);">${wi+1}. ${w}</span>`).join('')
+                      })()}
                     </div>
                   ` : ''}
                 </div>
@@ -327,7 +348,9 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       const btn   = document.getElementById('btn-submit-word')
 
       async function doSubmit() {
-        const word = input?.value?.trim()
+        // Twist physique : le bouton a un data-physical avec la valeur générique
+        const physicalVal = btn?.dataset?.physical
+        const word = physicalVal || input?.value?.trim()
         if (!word) { showToast('Écris un mot !', 'info'); return }
         if (btn) btn.disabled = true
         if (input) input.disabled = true
@@ -336,7 +359,7 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
 
       btn?.addEventListener('click', doSubmit)
       input?.addEventListener('keydown', e => { if (e.key === 'Enter') doSubmit() })
-      setTimeout(() => input?.focus(), 100)
+      if (!btn?.dataset?.physical) setTimeout(() => input?.focus(), 100)
     }
 
     // ── Mode ORAL : boutons hôte ──
@@ -356,10 +379,15 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       })
     }
 
-    // ── Bonus round order generation (tous modes) ──
+    // ── Bonus round order generation : seulement les joueurs à égalité ──
     if (isHost && needsOrderGen) {
       document.getElementById('btn-gen-order')?.addEventListener('click', async () => {
-        const ids = players.map(p => p.id)
+        // En tour bonus : tirer au sort seulement les tiedPlayers (ou tous si absent)
+        const tiedIds = room.tiedPlayers && room.tiedPlayers.length > 0
+          ? room.tiedPlayers
+          : players.map(p => p.id)
+        const eligibles = players.filter(p => tiedIds.includes(p.id)).map(p => p.id)
+        const ids = eligibles.length > 0 ? eligibles : players.map(p => p.id)
         const shuffle = arr => {
           const a = [...arr]
           for (let i = a.length - 1; i > 0; i--) {
@@ -524,127 +552,6 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
   // PHASE 3b : RE-VOTE (TIEBREAK)
   // =============================================
 
-  function renderTiebreakPhase(room, me) {
-    if (me.isEliminated) { renderEliminatedWaiting(); return }
-
-    const tiedIds       = room.tiedPlayers || []
-    const allPlayers    = Object.values(room.players || {}).filter(p => !p.isEliminated)
-    const tiedPlayers   = allPlayers.filter(p => tiedIds.includes(p.id))
-    const votes         = room.votes || {}
-    const myCurrentVote = votes[playerId] || null
-    let tbSubmitted     = !!myCurrentVote
-    const allVoted      = Object.keys(votes).length >= allPlayers.length
-
-    document.getElementById('game-container').innerHTML = `
-      <div class="flex flex-col min-h-screen gap-5">
-        ${renderHeader('Tour ' + room.currentRound + ' — Re-vote', room.currentRound, room)}
-
-        <!-- Bannière égalité -->
-        <div class="card p-4 text-center" style="border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.06);">
-          <p class="text-2xl mb-1">⚖️</p>
-          <p class="font-display font-bold text-lg" style="color: var(--amber-glow);">Égalité !</p>
-          <p class="text-sm mt-1" style="color: rgba(226,232,240,0.7);">
-            ${tiedPlayers.map(p => p.pseudo).join(' et ')} ont le même nombre de votes.<br>
-            Re-votez uniquement entre eux.
-          </p>
-        </div>
-
-        <!-- Rappel mot -->
-        ${renderFlippableWordCard(me)}
-
-        <!-- Boutons re-vote (seulement les joueurs à égalité) -->
-        <div class="flex flex-col gap-2">
-          ${tiedPlayers.map(p => {
-            const voteCount = Object.values(votes).filter(v => v === p.id).length
-            const isSelected = myCurrentVote === p.id
-            const isMe = p.id === playerId
-            return `
-              <button
-                class="vote-btn ${isSelected ? 'selected' : ''}"
-                data-player-id="${p.id}"
-                ${(isMe || (allVoted && !isSelected)) ? 'disabled' : ''}
-              >
-                <div class="flex items-center gap-3">
-                  <div class="player-avatar w-8 h-8 text-xs" style="background: ${getAvatarColor(p.id)}; width:32px; height:32px; min-width:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700;">
-                    ${p.pseudo.slice(0, 2).toUpperCase()}
-                  </div>
-                  <span class="font-body text-sm">${p.pseudo}${isMe ? ' (toi — ne peut pas voter pour soi)' : ''}</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  ${voteCount > 0 ? `<span class="text-xs font-mono px-2 py-0.5 rounded" style="background: rgba(245,158,11,0.1); color: var(--amber-glow);">${voteCount} vote${voteCount > 1 ? 's' : ''}</span>` : ''}
-                  ${isSelected ? '<span style="color: #ef4444;">✓</span>' : ''}
-                </div>
-              </button>
-            `
-          }).join('')}
-        </div>
-
-        <!-- Compteur -->
-        <div class="card p-4">
-          <div class="flex justify-between items-center mb-2">
-            <span class="text-xs font-mono" style="color: var(--text-muted);">Votes reçus</span>
-            <span class="text-xs font-mono" style="color: var(--amber-glow);">${Object.keys(votes).length} / ${allPlayers.length}</span>
-          </div>
-          <div class="vote-progress">
-            <div class="vote-progress-fill" style="width: ${(Object.keys(votes).length / Math.max(1, allPlayers.length)) * 100}%; background: var(--amber-glow);"></div>
-          </div>
-        </div>
-
-        <!-- Host controls -->
-        ${room.creatorId === playerId ? (() => {
-          const voteCount = Object.keys(votes).length
-          const noVote = voteCount === 0
-          return `
-            <div class="mt-auto flex flex-col gap-2">
-              ${!allVoted && !noVote ? `<p class="text-xs text-center font-mono" style="color: var(--amber-glow);">⚠️ ${allPlayers.length - voteCount} joueur(s) n'ont pas encore voté</p>` : ''}
-              <button id="btn-finalize-tiebreak" class="w-full text-base ${allVoted ? 'btn-danger' : noVote ? 'btn-ghost' : 'btn-warning'}" ${noVote ? 'disabled' : ''}>
-                ⚖️ ${allVoted ? 'Finaliser le re-vote' : noVote ? 'En attente...' : 'Forcer la finalisation'}
-              </button>
-            </div>
-          `
-        })() : `
-          <div class="mt-auto text-center py-3">
-            <p class="text-xs font-mono" style="color: var(--text-muted);">En attente du re-vote...</p>
-          </div>
-        `}
-      </div>
-    `
-
-    // ── Flip card toggle ──
-    attachFlipCardHandler()
-
-    // Voter
-    document.querySelectorAll('.vote-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (allVoted) return
-        const targetId = btn.getAttribute('data-player-id')
-        if (targetId === playerId) return // ne peut pas voter pour soi
-        const isChanging = tbSubmitted && myCurrentVote !== targetId
-        tbSubmitted = true
-        await castVote(roomCode, playerId, targetId)
-        showToast(isChanging ? 'Vote modifié !' : 'Vote enregistré !', 'success')
-      })
-    })
-
-    // Auto-finalisation
-    if (allVoted && room.creatorId === playerId) {
-      setTimeout(async () => {
-        const result = await processVotes(roomCode)
-        if (result?.bonusRound) showToast("Égalité ! Tour bonus lancé.", 'info')
-        else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne la manche.", 'info')
-      }, 800)
-    }
-
-    // Finalisation manuelle hôte
-    document.getElementById('btn-finalize-tiebreak')?.addEventListener('click', async () => {
-      if (Object.keys(votes).length === 0) return
-      const btn = document.getElementById('btn-finalize-tiebreak')
-      if (btn) { btn.disabled = true; btn.textContent = 'Calcul...' }
-      const result = await processVotes(roomCode)
-      if (result?.bonusRound) showToast("Égalité ! Tour bonus lancé.", 'info')
-      else if (result?.bonusTieWin) showToast("Égalité au tour bonus ! L'Undercover gagne la manche.", 'info')
-    })
-  }
 
   // =============================================
   // PHASE 3c : DEVINETTE DU TOURISTE
@@ -882,8 +789,8 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
                 🏆 Voir les scores
               </button>
             ` : `
-              <button id="btn-see-scores" class="btn-primary w-full text-base">
-                🏆 Voir les scores
+              <button id="btn-next-tour" class="btn-primary w-full text-base">
+                ▶ Tour suivant
               </button>
               <button id="btn-end-game-early" class="btn-ghost w-full text-sm">
                 Terminer la partie
@@ -898,11 +805,24 @@ export function renderGameScreen(container, { playerId, roomCode, onGameEnd, onB
       </div>
     `
 
-    // Voir les scores → endRound → round_end state
+    // Fin de round → calcul des scores (uniquement si quelqu'un a gagné)
     document.getElementById('btn-see-scores')?.addEventListener('click', async () => {
       const btn = document.getElementById('btn-see-scores')
       if (btn) { btn.disabled = true; btn.textContent = 'Calcul des scores...' }
       await endRound(roomCode, winResult)
+    })
+
+    // Tour suivant dans la même manche (roundWinner=null, jeu continue)
+    document.getElementById('btn-next-tour')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-next-tour')
+      if (btn) { btn.disabled = true; btn.textContent = 'Chargement...' }
+      const { generateTwist } = await import('../game/twists.js')
+      const alivePlayers = Object.values(room.players || {})
+        .filter(p => !p.isEliminated)
+        .map(p => ({ id: p.id, pseudo: p.pseudo }))
+      const twist = generateTwist(alivePlayers)
+      await nextRound(roomCode, twist)
+      voteSubmitted = false
     })
 
     // Arrêt forcé → classe les joueurs par score actuel

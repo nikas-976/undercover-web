@@ -496,6 +496,14 @@ export function renderLobbyScreen(container, { playerId, roomCode, pseudo, onGam
       if (!chk) return
       chk.checked = !chk.checked
       settings.useTextInput = chk.checked
+      // Auto-activer Notes quand on active la saisie texte
+      if (chk.checked) {
+        const notesChk = document.getElementById('setting-notes')
+        if (notesChk && !notesChk.checked) {
+          notesChk.checked = true
+          settings.useNotes = true
+        }
+      }
       updateToggleUI()
       await syncSettings()
     })
